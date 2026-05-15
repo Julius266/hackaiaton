@@ -1,5 +1,5 @@
 import cors from 'cors';
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import { env } from './config/env';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import { AiService } from './services/ai.service';
@@ -8,6 +8,7 @@ import { ChatService } from './services/chat.service';
 import { NotionService } from './services/notion.service';
 import { UserService } from './services/user.service';
 import { createApiRouter } from './routes';
+import { logger } from './utils/logger';
 
 function parseCorsOrigin(origin: string): string | string[] | boolean {
   if (origin.trim() === '*') {
@@ -30,6 +31,16 @@ export function createApp() {
   const userService = new UserService(notionService);
 
   const app = express();
+
+  // Request logging middleware
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      const duration = Date.now() - start;
+      logger.info(`${req.method} ${req.originalUrl} ${res.statusCode} - ${duration}ms`);
+    });
+    next();
+  });
 
   app.use(
     cors({

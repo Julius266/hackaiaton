@@ -81,6 +81,33 @@ export class UserService {
 
     return this.notion.mapUser(page);
   }
+
+  public async updateProfile(userId: string, data: { name?: string; email?: string }): Promise<UserRecord | null> {
+    const properties: Record<string, any> = {};
+    if (data.email) {
+      properties.Email = { title: [{ text: { content: data.email } }] };
+    }
+    // Note: In this schema, 'Name' might not exist in the users DB directly, 
+    // but we can try to update it if it's there or update the linked patient.
+    // For now, let's just update the user record properties that exist.
+    
+    const page = await this.notion.updatePage({
+      pageId: userId,
+      properties,
+    });
+    return this.notion.mapUser(page);
+  }
+
+  public async updatePassword(userId: string, newPassword: string): Promise<boolean> {
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await this.notion.updatePage({
+      pageId: userId,
+      properties: {
+        Password_Hash: { rich_text: [{ text: { content: hashedPassword } }] },
+      },
+    });
+    return true;
+  }
 }
 
 export default UserService;

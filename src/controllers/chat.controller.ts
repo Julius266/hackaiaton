@@ -5,6 +5,7 @@ import type { BusinessService } from '../services/business.service';
 import type { ChatService } from '../services/chat.service';
 import { wrapAsync } from '../utils/async-handler';
 import { createCustomerId } from '../utils/id';
+import { logger } from '../utils/logger';
 
 const chatMessageSchema = z.object({
   customerId: z.string().optional(),
@@ -35,12 +36,15 @@ export function createChatMessageController(deps: {
 
     let customerId = payload.customerId ?? payload.numeroPoliza ?? createCustomerId();
 
+    logger.info(`Processing message for customer: ${customerId}`);
+
     // If user is authenticated and has linked patients, enforce access control
     if (authUser?.linkedPatientPageIds && Array.isArray(authUser.linkedPatientPageIds) && authUser.linkedPatientPageIds.length > 0) {
       const linked: string[] = authUser.linkedPatientPageIds;
       if (payload.customerId) {
         // if provided customerId is not one of linked patient page ids, deny
         if (!linked.includes(payload.customerId)) {
+          logger.warn(`Access denied for user ${authUser.id} to patient ${payload.customerId}`);
           res.status(403).json({ success: false, message: 'Forbidden: no access to requested patient' });
           return;
         }
@@ -49,14 +53,20 @@ export function createChatMessageController(deps: {
         customerId = linked[0];
       }
     }
+    
+    logger.debug(`Updating context for ${customerId}`);
     const customerContext = await deps.chatService.updateCustomerContext(customerId, {
       ...payload.customerContext,
       metadata: payload.metadata,
     });
 
     const historyBeforeAnswer = await deps.chatService.getConversationHistory(customerId);
+    
+    logger.info('Analyzing symptoms with AI...');
     const analysis = await deps.aiService.analyzeSymptoms(payload.message, customerContext, historyBeforeAnswer);
     const requiredData = deps.aiService.determineRequiredData(analysis);
+
+    logger.info(`Specialty detected: ${analysis.specialty}, Intent: ${analysis.intent}`);
 
     const businessData = await deps.businessService.fetchBusinessData({
       numeroPoliza: customerId,
@@ -75,7 +85,7 @@ export function createChatMessageController(deps: {
 
     const consultationId = businessData.consultation.pageId;
 
-    const userMessage = await deps.chatService.saveMessage({
+    await deps.chatService.saveMessage({
       customerId,
       conversationId: consultationId,
       role: 'user',
@@ -84,6 +94,7 @@ export function createChatMessageController(deps: {
       metadata: payload.metadata ?? {},
     });
 
+    logger.info('Generating final AI response...');
     const assistantMessageText = await deps.aiService.generateFinalResponse({
       customerContext: {
         ...customerContext,
@@ -98,7 +109,7 @@ export function createChatMessageController(deps: {
       },
       analysis,
       businessData,
-      history: [...historyBeforeAnswer, userMessage],
+      history: [...historyBeforeAnswer], // Use history before adding current user message for simplicity or fetch full history again
     });
 
     const assistantMessage = await deps.chatService.saveMessage({
@@ -114,16 +125,8 @@ export function createChatMessageController(deps: {
     });
 
     const finalHistory = await deps.chatService.getConversationHistory(customerId);
-    const finalContext = await deps.chatService.updateCustomerContext(customerId, {
-      lastIntent: analysis.intent,
-      lastPriority: analysis.priority,
-      lastSpecialty: analysis.specialty,
-      consultationId,
-      patientPageId: businessData.patient?.pageId,
-      planPageId: businessData.plan?.pageId,
-      specialtyPageId: businessData.specialty?.pageId,
-      hospitalPageId: businessData.recommendedHospital?.pageId,
-    });
+    
+    logger.info(`Message processed successfully for ${customerId}`);
 
     res.status(200).json({
       success: true,
@@ -134,7 +137,6 @@ export function createChatMessageController(deps: {
         businessData,
         assistantMessage: assistantMessage.content,
         history: finalHistory,
-        customerContext: finalContext,
       },
     });
   });

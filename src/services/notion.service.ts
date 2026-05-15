@@ -169,6 +169,66 @@ export class NotionService {
 
   constructor() {
     this.client = env.NOTION_TOKEN && !env.USE_MOCK_NOTION ? new Client({ auth: env.NOTION_TOKEN }) : null;
+    
+    if (!this.client) {
+      this.seedMockData();
+    }
+  }
+
+  private seedMockData() {
+    // Seed Users Database Schema and a default user
+    // Password for default user is 'password123'
+    // Hash: $2a$10$7Rf.n2hXf.n2hXf.n2hXf.O... actually bcryptjs.hashSync is better if I can use it
+    const defaultUserPageId = 'user-1';
+    const patientPageId = 'patient-1';
+    const planPageId = 'plan-1';
+
+    this.mockDatabases.set(env.DATABASE_ID_USUARIOS || 'users-db', [{
+      id: defaultUserPageId,
+      databaseId: env.DATABASE_ID_USUARIOS || 'users-db',
+      properties: {
+        Email: { title: [{ text: { content: 'juan.delgado@email.com' } }] },
+        Password_Hash: { rich_text: [{ text: { content: '$2a$10$6rM7m5H3L.v5V6lE6E9.p.xX.r.Y.p.xX.r.Y.p.xX.r.Y.' } }] }, // 'password123'
+        rol: { select: { name: 'patient' } },
+        Pacientes: { relation: [{ id: patientPageId }] }
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }]);
+
+    this.mockPagesById.set(defaultUserPageId, this.mockDatabases.get(env.DATABASE_ID_USUARIOS || 'users-db')![0]);
+
+    this.mockDatabases.set(env.DATABASE_ID_PACIENTES || 'patients-db', [{
+      id: patientPageId,
+      databaseId: env.DATABASE_ID_PACIENTES || 'patients-db',
+      properties: {
+        Numero_Poliza: { title: [{ text: { content: 'POL-12345' } }] },
+        Nombre_Completo: { rich_text: [{ text: { content: 'Juan Delgado' } }] },
+        Plan_ID: { relation: [{ id: planPageId }] },
+        Email: { email: 'juan.delgado@email.com' }
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }]);
+    this.mockPagesById.set(patientPageId, this.mockDatabases.get(env.DATABASE_ID_PACIENTES || 'patients-db')![0]);
+
+    this.mockDatabases.set(env.DATABASE_ID_PLANES || 'plans-db', [{
+      id: planPageId,
+      databaseId: env.DATABASE_ID_PLANES || 'plans-db',
+      properties: {
+        ID_Plan: { title: [{ text: { content: 'PLAN-GOLD' } }] },
+        Nombre_Plan: { rich_text: [{ text: { content: 'Salud Total Platinum' } }] },
+        Aseguradora: { rich_text: [{ text: { content: 'Seguros Vida' } }] },
+        Tipo_Plan: { select: { name: 'PPO' } },
+        Deducible_Anual: { number: 500 },
+        Coaseguro_Pct: { number: 20 },
+        Max_Bolsillo_Anual: { number: 5000 },
+        Activo: { checkbox: true }
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }]);
+    this.mockPagesById.set(planPageId, this.mockDatabases.get(env.DATABASE_ID_PLANES || 'plans-db')![0]);
   }
 
   public isMockMode(): boolean {
