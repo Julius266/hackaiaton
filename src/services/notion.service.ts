@@ -258,6 +258,10 @@ export class NotionService {
     return !this.client;
   }
 
+  public isRealNotionId(id: string): boolean {
+    return /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(id);
+  }
+
   /** Reintenta llamadas ante 502/503/504/429 (fallos transitorios del API Notion). */
   private async notionCallWithRetry<T>(operation: string, fn: () => Promise<T>): Promise<T> {
     const maxAttempts = 4;
@@ -360,18 +364,25 @@ export class NotionService {
 
   public async updatePage(input: NotionUpdatePageInput): Promise<NotionPageResult> {
     if (!this.client) {
-      const existing = this.mockPagesById.get(input.pageId);
-      if (existing) {
-        existing.properties = {
-          ...existing.properties,
-          ...input.properties,
-        };
-        existing.updatedAt = new Date().toISOString();
+      if (input.archived) {
+        this.mockPagesById.delete(input.pageId);
+        for (const [dbId, records] of this.mockDatabases) {
+          this.mockDatabases.set(dbId, records.filter(r => r.id !== input.pageId));
+        }
+      } else {
+        const existing = this.mockPagesById.get(input.pageId);
+        if (existing) {
+          existing.properties = {
+            ...existing.properties,
+            ...(input.properties || {}),
+          };
+          existing.updatedAt = new Date().toISOString();
+        }
       }
 
       return {
         id: input.pageId,
-        properties: input.properties,
+        properties: input.properties || {},
       } as NotionPageResult;
     }
 
@@ -379,8 +390,13 @@ export class NotionService {
       this.client!.pages.update({
         page_id: input.pageId,
         properties: input.properties,
+        archived: input.archived,
       } as any),
     ) as Promise<NotionPageResult>;
+  }
+
+  public async archivePage(pageId: string): Promise<void> {
+    await this.updatePage({ pageId, archived: true });
   }
 
   public async findPatientByNumeroPoliza(numeroPoliza: string): Promise<PatientRecord | null> {
@@ -398,14 +414,25 @@ export class NotionService {
     const byPoliza = await this.findPatientByNumeroPoliza(trimmed);
     if (byPoliza) return byPoliza;
 
-    const pageId = this.normalizeNotionUuid(trimmed);
-    if (!pageId) return null;
+    let pageId = this.normalizeNotionUuid(trimmed);
+    if (!pageId) {
+      if (this.isMockMode()) {
+        pageId = trimmed;
+      } else {
+        return null;
+      }
+    }
 
     const page = await this.getPage(pageId);
     if (!page?.properties) return null;
 
+    // In mock mode, parent might not be set accurately
+    if (this.isMockMode()) {
+      return this.mapPatient(page);
+    }
+
     const parent = (page as NotionPageResult & { parent?: { type?: string; database_id?: string } }).parent;
-    if (parent?.type === 'database_id' && parent.database_id === env.DATABASE_ID_PACIENTES) {
+    if (parent?.type === 'database_id' && this.normalizeNotionUuid(parent.database_id) === this.normalizeNotionUuid(env.DATABASE_ID_PACIENTES)) {
       return this.mapPatient(page);
     }
 
@@ -652,9 +679,8 @@ export class NotionService {
     sintomaIngresado: string;
     estadoConsulta?: string;
   }): Promise<ConsultationRecord> {
-    const properties = {
+    const properties: any = {
       ID_Consulta: toTitle(`CON-${createMessageId()}`),
-      Numero_Poliza: input.patientPageId ? toRelation([input.patientPageId]) : toRelation([]),
       Especialidad_Sugerida: input.specialtyPageId ? toRelation([input.specialtyPageId]) : toRelation([]),
       Hospital_Recomendado: input.hospitalPageId ? toRelation([input.hospitalPageId]) : toRelation([]),
       Copago_Estimado: typeof input.copagoEstimado === 'number' ? toNumber(input.copagoEstimado) : toNumber(0),
@@ -662,12 +688,43 @@ export class NotionService {
       Estado_Consulta: toSelect(input.estadoConsulta ?? 'Abierta'),
     };
 
-    const page = await this.createPage({
-      databaseId: env.DATABASE_ID_CONSULTAS,
-      properties,
-    });
+    // Intentamos usar el patientPageId, o si no hay, usamos el numeroPoliza (User ID) como fallback para la relación
+    const relationId = input.patientPageId || (this.normalizeNotionUuid(input.numeroPoliza) ? input.numeroPoliza : null);
 
-    return this.mapConsultation(page, input.numeroPoliza, input.patientPageId);
+    if (relationId) {
+      properties.Numero_Poliza = toRelation([relationId]);
+    } else {
+      properties.Numero_Poliza = toRelation([]);
+    }
+
+    try {
+      const page = await this.createPage({
+        databaseId: env.DATABASE_ID_CONSULTAS,
+        properties,
+      });
+      return this.mapConsultation(page, input.numeroPoliza, input.patientPageId);
+    } catch (err: any) {
+      // Si falla porque el User ID pertenece a otra BD o la propiedad no es de relación
+      logger.warn(`Failed to create consultation with relation. Retrying without relation or as text... Error: ${err.message}`);
+      
+      try {
+        // Intento 2: Como texto si la columna cambió a texto
+        properties.Numero_Poliza = toText(input.numeroPoliza);
+        const page2 = await this.createPage({
+          databaseId: env.DATABASE_ID_CONSULTAS,
+          properties,
+        });
+        return this.mapConsultation(page2, input.numeroPoliza, input.patientPageId);
+      } catch (err2: any) {
+        // Intento 3: Relación vacía (huérfano, pero al menos no crashea)
+        properties.Numero_Poliza = toRelation([]);
+        const page3 = await this.createPage({
+          databaseId: env.DATABASE_ID_CONSULTAS,
+          properties,
+        });
+        return this.mapConsultation(page3, input.numeroPoliza, input.patientPageId);
+      }
+    }
   }
 
   public async appendChatMessage(message: {
@@ -725,7 +782,7 @@ export class NotionService {
 
   public async getConsultationsByNumeroPoliza(numeroPoliza: string): Promise<ConsultationRecord[]> {
     const pages = await this.queryDatabase(env.DATABASE_ID_CONSULTAS);
-    const patient = await this.findPatientByNumeroPoliza(numeroPoliza);
+    const patient = await this.findPatientByNumeroPolizaOrPageId(numeroPoliza);
     const patientPageId = patient?.pageId;
 
     return pages
@@ -754,6 +811,16 @@ export class NotionService {
       })
       .map((page) => {
         const session = this.mapSessionMessage(page);
+        
+        // Intentamos parsear metadata si existe
+        let metadata = {};
+        try {
+          const rawMeta = this.extract(page, 'Metadata');
+          if (rawMeta) metadata = JSON.parse(rawMeta);
+        } catch (e) {
+          // ignore
+        }
+
         return {
           id: session.idMensaje,
           customerId: numeroPoliza,
@@ -761,7 +828,7 @@ export class NotionService {
           role: session.role,
           content: session.mensaje,
           timestamp: session.timestamp,
-          metadata: {},
+          metadata,
         } satisfies ChatMessage;
       });
   }
@@ -772,6 +839,16 @@ export class NotionService {
       .filter((page) => extractRelationIds(page.properties.Consulta_ID).includes(conversationId))
       .map((page) => {
         const session = this.mapSessionMessage(page);
+
+        // Intentamos parsear metadata si existe
+        let metadata = {};
+        try {
+          const rawMeta = this.extract(page, 'Metadata');
+          if (rawMeta) metadata = JSON.parse(rawMeta);
+        } catch (e) {
+          // ignore
+        }
+
         return {
           id: session.idMensaje,
           customerId,
@@ -779,7 +856,7 @@ export class NotionService {
           role: session.role,
           content: session.mensaje,
           timestamp: session.timestamp,
-          metadata: {},
+          metadata,
         } satisfies ChatMessage;
       });
   }
@@ -883,11 +960,18 @@ export class NotionService {
 
   private matchesNumeroPoliza(page: NotionPageResult, numeroPoliza: string, patientPageId?: string): boolean {
     const relationIds = extractRelationIds(page.properties.Numero_Poliza);
-    if (patientPageId && relationIds.includes(patientPageId)) {
-      return true;
+    if (patientPageId) {
+      const normPatient = this.normalizeNotionUuid(patientPageId);
+      if (normPatient && relationIds.some((id) => this.normalizeNotionUuid(id) === normPatient)) {
+        return true;
+      }
     }
 
     if (relationIds.length > 0) {
+      const normPoliza = this.normalizeNotionUuid(numeroPoliza);
+      if (normPoliza && relationIds.some((id) => this.normalizeNotionUuid(id) === normPoliza)) {
+        return true;
+      }
       return relationIds.some((id) => normalizeString(id) === normalizeString(numeroPoliza));
     }
 
@@ -1028,6 +1112,8 @@ export class NotionService {
     const email = typeof emailProperty?.email === 'string' ? emailProperty.email : this.extract(page, 'Email') || undefined;
     const passwordHash = this.extract(page, 'Password_Hash') || undefined;
     const role = this.extract(page, 'rol') || this.extract(page, 'role') || undefined;
+    const resetCode = this.extract(page, 'Reset_Code') || undefined;
+    const resetCodeExpiry = this.extract(page, 'Reset_Code_Expiry') || undefined;
 
     // attempt to find linked patient relation property
     const propKeys = Object.keys(page.properties || {});
@@ -1040,6 +1126,8 @@ export class NotionService {
       passwordHash,
       role,
       linkedPatientPageIds,
+      resetCode,
+      resetCodeExpiry,
       raw: page.properties as Record<string, any>,
     };
   }

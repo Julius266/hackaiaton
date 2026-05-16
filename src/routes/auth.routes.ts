@@ -12,6 +12,9 @@ export function createAuthRouter(deps: { userService: UserService }): Router {
   router.post('/register', controller.register);
   router.put('/profile', auth, controller.updateProfile);
   router.put('/password', auth, controller.updatePassword);
+  router.post('/request-code', auth, controller.requestCode);
+  router.post('/verify-password', auth, controller.verifyAndChangePassword);
+  router.delete('/account', auth, controller.deleteAccount);
 
   return router;
 }

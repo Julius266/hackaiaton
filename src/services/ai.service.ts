@@ -4,6 +4,7 @@ import type { FinalResponseInput, RequiredDataResult, SymptomAnalysis } from '..
 import type { BusinessData } from '../types/business.types';
 import type { ChatMessage, CustomerContext } from '../types/chat.types';
 import { extractJsonCandidate, safeJsonParse } from '../utils/json';
+import { logger } from '../utils/logger';
 
 interface CompletionMessage {
   role: 'system' | 'user' | 'assistant';
@@ -39,23 +40,47 @@ const DEFAULT_ANALYSIS: SymptomAnalysis = {
 
 function buildHeuristicAnalysis(message: string, customerContext: CustomerContext): SymptomAnalysis {
   const normalized = message.toLowerCase();
+  
+  // Detectar fuera de ámbito
+  const isOutOfScope = detectOutOfScope(normalized);
+  
   const specialty = detectSpecialty(normalized);
   const priority = detectPriority(normalized);
-  const intent = detectIntent(normalized, specialty, priority);
+  const intent = isOutOfScope ? 'out_of_scope' : detectIntent(normalized, specialty, priority);
   const requiredData = buildRequiredData(intent, specialty, priority);
-  const summary = `Síntomas interpretados para ${specialty.toLowerCase()} con prioridad ${priority}.`;
-  const followUpQuestions = buildFollowUpQuestions(intent, specialty, priority);
+  
+  const summary = isOutOfScope 
+    ? 'Consulta fuera de ámbito médico.'
+    : `Síntomas interpretados para ${specialty.toLowerCase()} con prioridad ${priority}.`;
+    
+  const followUpQuestions = isOutOfScope ? [] : buildFollowUpQuestions(intent, specialty, priority);
 
   return {
     intent,
     specialty,
     priority,
     requiredData,
-    needsBusinessData: requiredData.some((item) => ['hospitals', 'coverage', 'copay'].includes(item)),
+    needsBusinessData: intent === 'hospital_recommendation' || intent === 'coverage_check',
     summary,
     followUpQuestions,
     structuredSignal: customerContext.planType ? `plan:${customerContext.planType}` : 'heuristic',
   };
+}
+
+function detectOutOfScope(message: string): boolean {
+  const outOfScopeKeywords = [
+    'clima', 'tiempo hoy', 'fútbol', 'futbol', 'deportes', 'política', 'politica',
+    'película', 'cine', 'chiste', 'música', 'musica', 'videojuego', 'cocina',
+    'receta', 'bitcoin', 'cripto', 'historia de', 'quien gano'
+  ];
+  
+  const hasHealthKeyword = /\b(salud|dolor|medico|médico|hospital|seguro|póliza|poliza|copago|cobertura|síntoma|sintoma|pastilla|remedio|bienestar|doctor|clinica|clínica|especialidad|cita|medicina)\b/i.test(message);
+  
+  if (!hasHealthKeyword && outOfScopeKeywords.some(kw => message.includes(kw))) {
+    return true;
+  }
+  
+  return false;
 }
 
 function detectSpecialty(message: string): string {
@@ -86,11 +111,16 @@ function detectPriority(message: string): SymptomAnalysis['priority'] {
 }
 
 function detectIntent(message: string, specialty: string, priority: SymptomAnalysis['priority']): string {
+  // Saludos o preguntas generales sobre el asistente
+  if (/\b(hola|buenos dias|buenas tardes|quien eres|que haces|cómo estás|como estas)\b/i.test(message) && message.length < 35) {
+    return 'general_information';
+  }
+
   if (message.includes('cobertura') || message.includes('copago') || message.includes('seguro') || message.includes('aseguradora')) {
     return 'coverage_check';
   }
 
-  if (priority === 'urgent' || specialty !== 'Medicina General') {
+  if (priority === 'urgent' || (specialty !== 'Medicina General' && message.length > 20)) {
     return 'hospital_recommendation';
   }
 
@@ -118,13 +148,15 @@ function buildRequiredData(intent: string, specialty: string, priority: SymptomA
   return Array.from(required);
 }
 
-/** Una sola pregunta de seguimiento; evita insistir en “más síntomas” cuando ya hay un motivo claro. */
 function buildFollowUpQuestions(intent: string, _specialty: string, priority: SymptomAnalysis['priority']): string[] {
   if (priority === 'urgent') {
     return ['¿Hay ahora mismo dificultad para respirar, desmayo o dolor muy intenso?'];
   }
   if (intent === 'coverage_check') {
     return ['¿Qué plan o aseguradora tienes contratada?'];
+  }
+  if (intent === 'general_information') {
+    return [];
   }
   return ['¿Desde cuánto tiempo lo tienes o qué lo empeora?'];
 }
@@ -146,7 +178,6 @@ function messageSuggestsTimingAlready(message: string): boolean {
   );
 }
 
-/** Limita y filtra preguntas del modelo para no repetir insistencia en síntomas extra. */
 function capFollowUpQuestions(
   questions: string[],
   message: string,
@@ -289,7 +320,6 @@ function buildBusinessFacts(businessData: BusinessData): Record<string, unknown>
             'OBLIGATORIO si hay al menos un fragmento: en tu respuesta al paciente incluye 1–2 frases en lenguaje natural que digan QUÉ información concreta aportan estos fragmentos (servicios, especialidades o páginas citadas). Si mencionan la especialidad que busca el usuario, dilo con cautela; si NO la mencionan o son ambiguos, dilo explícitamente. No afirmes cobertura del seguro ni disponibilidad real. Indica que puede estar desactualizado y que debe confirmar con el hospital. Los fragmentos vienen de búsqueda web (proveedor en JSON: tavily, serper o ambos); no inventes nada fuera de estos textos.',
         }
       : null,
-    /** Centros del mapa (p. ej. OSM) con búsqueda web por hospital; mismo uso que hospitalWebEnrichment. */
     centrosMapaEnriquecimientoWeb: businessData.hospitals
       .filter((h) => (h.webEnrichment?.fragmentos?.length ?? 0) > 0)
       .slice(0, 5)
@@ -328,7 +358,7 @@ export class AiService {
         '',
         'Devuelve un JSON válido con esta estructura:',
         '{',
-        '  "intent": "hospital_recommendation|coverage_check|triage|appointment_guidance|follow_up|general_information",',
+        '  "intent": "hospital_recommendation|coverage_check|triage|appointment_guidance|follow_up|general_information|out_of_scope",',
         '  "specialty": "string",',
         '  "priority": "low|medium|high|urgent",',
         '  "requiredData": ["string"],',
@@ -431,6 +461,14 @@ export class AiService {
   }
 
   private buildFallbackFinalResponse(analysis: SymptomAnalysis, businessData: BusinessData, history: ChatMessage[]): string {
+    if (analysis.intent === 'out_of_scope') {
+      return 'Lo siento, soy un asistente especializado exclusivamente en temas de salud, seguros médicos y copagos. No puedo ayudarte con consultas sobre otros temas.';
+    }
+
+    if (analysis.intent === 'general_information' && !analysis.needsBusinessData) {
+      return '¡Hola! Soy tu asistente virtual de salud. Estoy aquí para ayudarte a interpretar tus síntomas, orientarte sobre coberturas de seguro y recomendarte los mejores hospitales de tu red. ¿En qué puedo ayudarte hoy?';
+    }
+
     const hosp = businessData.recommendedHospital;
     const distKm = businessData.recommendedHospitalDistanceKm;
     const portfolio =

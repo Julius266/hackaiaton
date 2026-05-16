@@ -90,6 +90,8 @@ export interface UserRecord extends NotionBaseRecord {
   passwordHash?: string;
   role?: string;
   linkedPatientPageIds?: string[];
+  resetCode?: string;
+  resetCodeExpiry?: string;
 }
 
 export interface ConsultationContext {

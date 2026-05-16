@@ -28,7 +28,7 @@ export function createApp() {
   const chatService = new ChatService(notionService);
   const businessService = new BusinessService(notionService);
   const aiService = new AiService();
-  const userService = new UserService(notionService);
+  const userService = new UserService(notionService, chatService);
 
   const app = express();
 

@@ -38,7 +38,7 @@ const envSchema = z.object({
   GEOCODING_PROVIDER: z.string().optional().default('google'),
   GOOGLE_GEOCODING_API_KEY: z.string().optional().default(''),
   JWT_ACCESS_SECRET: z.string().optional().default(''),
-  ACCESS_TOKEN_TTL: z.string().optional().default('15m'),
+  ACCESS_TOKEN_TTL: z.string().optional().default('24h'),
   USE_MOCK_NOTION: booleanFromEnv,
   /**
    * Obligatoria para enriquecer el hospital recomendado vía Tavily en cada consulta de chat que tenga recomendación.

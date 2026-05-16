@@ -13,7 +13,8 @@ export interface NotionCreatePageInput {
 
 export interface NotionUpdatePageInput {
   pageId: string;
-  properties: Record<string, unknown>;
+  properties?: Record<string, any>;
+  archived?: boolean;
 }
 
 export interface NotionPageResult {

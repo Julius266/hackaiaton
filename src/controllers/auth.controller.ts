@@ -16,7 +16,14 @@ const registerSchema = z.object({
   linkedPatientPageIds: z.array(z.string()).optional(),
 });
 
-export function createAuthController(deps: { userService: UserService }): { login: RequestHandler; register: RequestHandler; updateProfile: RequestHandler; updatePassword: RequestHandler } {
+export function createAuthController(deps: { userService: UserService }): { 
+  login: RequestHandler; 
+  register: RequestHandler; 
+  updateProfile: RequestHandler; 
+  updatePassword: RequestHandler;
+  requestCode: RequestHandler;
+  verifyAndChangePassword: RequestHandler;
+} {
   return {
     login: wrapAsync(async (req, res) => {
       const payload = loginSchema.parse(req.body);
@@ -31,7 +38,22 @@ export function createAuthController(deps: { userService: UserService }): { logi
 
       logger.info(`Successful login for user: ${user.pageId}`);
       const token = deps.userService.createAccessToken(user);
-      res.json({ success: true, data: { accessToken: token, user: { id: user.pageId, email: user.email, role: user.role } } });
+      
+      // Enviamos el primer patientId vinculado como ID principal para el historial de chat
+      const patientId = user.linkedPatientPageIds?.[0] || user.pageId;
+      
+      res.json({ 
+        success: true, 
+        data: { 
+          accessToken: token, 
+          user: { 
+            id: user.pageId, 
+            patientId,
+            email: user.email, 
+            role: user.role 
+          } 
+        } 
+      });
       return;
     }),
 
@@ -71,6 +93,50 @@ export function createAuthController(deps: { userService: UserService }): { logi
       }
       const success = await deps.userService.updatePassword(authUser.sub, req.body.password);
       res.json({ success });
+    }),
+
+    requestCode: wrapAsync(async (req, res) => {
+      const authUser = (req as any).user;
+      if (!authUser) {
+        res.status(401).json({ success: false, message: 'Unauthorized' });
+        return;
+      }
+      const code = await deps.userService.generateVerificationCode(authUser.sub);
+      logger.info(`Verification code generated for user ${authUser.sub}: ${code} (Simulation)`);
+      res.json({ success: true, message: 'Verification code sent', code }); // In real app, don't return code
+    }),
+
+    verifyAndChangePassword: wrapAsync(async (req, res) => {
+      const authUser = (req as any).user;
+      const { code, password } = req.body;
+      if (!authUser) {
+        res.status(401).json({ success: false, message: 'Unauthorized' });
+        return;
+      }
+      
+      const isValid = await deps.userService.verifyCode(authUser.sub, code);
+      if (!isValid) {
+        res.status(400).json({ success: false, message: 'Invalid or expired code' });
+        return;
+      }
+
+      const success = await deps.userService.updatePassword(authUser.sub, password);
+      res.json({ success });
+    }),
+
+    deleteAccount: wrapAsync(async (req, res) => {
+      const authUser = (req as any).user;
+      if (!authUser) {
+        res.status(401).json({ success: false, message: 'Unauthorized' });
+        return;
+      }
+      
+      await deps.userService.deleteAccount(authUser.sub);
+      
+      res.json({
+        success: true,
+        message: 'Account and all related data deleted successfully'
+      });
     }),
   };
 }

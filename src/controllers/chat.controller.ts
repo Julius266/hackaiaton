@@ -111,24 +111,49 @@ export function createChatMessageController(deps: {
           .join(' · '),
       });
 
-      logger.info(`Specialty detected: ${analysis.specialty}, Intent: ${analysis.intent}`);
+      logger.info(`Specialty detected: ${analysis.specialty}, Intent: ${analysis.intent}, Needs Business Data: ${analysis.needsBusinessData}`);
 
-      const businessData = await deps.businessService.fetchBusinessData({
-        numeroPoliza: customerId,
-        symptomText: payload.message,
-        customerContext: {
-          ...customerContext,
-          ...payload.customerContext,
-        },
-        consultationPageId: requestedConversationId,
-        analysis: {
-          specialty: analysis.specialty,
-          priority: analysis.priority,
-          intent: analysis.intent,
-          requiredData: requiredData.requiredData,
-        },
-        onChatProgress: emit,
-      });
+      let businessData: any = null;
+      
+      if (analysis.needsBusinessData) {
+        businessData = await deps.businessService.fetchBusinessData({
+          numeroPoliza: customerId,
+          symptomText: payload.message,
+          customerContext: {
+            ...customerContext,
+            ...payload.customerContext,
+          },
+          consultationPageId: requestedConversationId,
+          analysis: {
+            specialty: analysis.specialty,
+            priority: analysis.priority,
+            intent: analysis.intent,
+            requiredData: requiredData.requiredData,
+          },
+          onChatProgress: emit,
+        });
+      } else {
+        // Para respuestas simples, necesitamos asegurar que exista una consulta en Notion
+        // para poder guardar los mensajes.
+        let consultationId = requestedConversationId;
+        
+        if (!consultationId || consultationId.startsWith('new-')) {
+          const newConsultation = await deps.notionService.createConsultationRecord({
+            numeroPoliza: customerId,
+            patientPageId: (customerContext as any).patientPageId,
+            sintomaIngresado: payload.message.slice(0, 50),
+            estadoConsulta: 'Abierta',
+          });
+          consultationId = newConsultation.pageId;
+        }
+
+        businessData = {
+          consultation: { pageId: consultationId },
+          hospitals: [],
+          coverage: { coveragePercent: 0, estimatedCopay: 0, currency: 'USD' },
+          decisionNotes: ['Skipped business data: not needed for this intent']
+        };
+      }
 
       await deps.chatService.saveMessage({
         customerId,
@@ -139,7 +164,13 @@ export function createChatMessageController(deps: {
         metadata: payload.metadata ?? {},
       });
 
-      emit({ phase: 'ai_response', label: 'Generando respuesta con tus datos de cobertura y red…' });
+      emit({ 
+        phase: 'ai_response', 
+        label: analysis.needsBusinessData 
+          ? 'Generando respuesta con tus datos de cobertura y red…' 
+          : 'Generando respuesta…' 
+      });
+      
       logger.info('Generating final AI response...');
       const assistantMessageText = await deps.aiService.generateFinalResponse({
         customerContext: {
@@ -231,6 +262,7 @@ export function createChatHistoryController(chatService: ChatService): RequestHa
     const customerId = z.string().min(1).parse(req.params.customerId);
     const conversationId = typeof req.query.conversationId === 'string' ? req.query.conversationId : undefined;
     const authUser = (req as any).user;
+    
     if (authUser?.linkedPatientPageIds && Array.isArray(authUser.linkedPatientPageIds) && authUser.linkedPatientPageIds.length > 0) {
       const linked: string[] = authUser.linkedPatientPageIds;
       if (!linked.includes(customerId)) {
@@ -238,6 +270,21 @@ export function createChatHistoryController(chatService: ChatService): RequestHa
         return;
       }
     }
+
+    // Si no hay conversationId, devolvemos la lista de sesiones disponibles para este usuario
+    if (!conversationId) {
+      const sessions = await chatService.getUserSessions(customerId);
+      res.json({
+        success: true,
+        data: {
+          customerId,
+          sessions
+        }
+      });
+      return;
+    }
+
+    // Si hay conversationId, devolvemos el historial de esa sesión específica
     const history = await chatService.getConversationHistory(customerId, conversationId);
     const state = await chatService.getConversationState(customerId, conversationId);
 
@@ -249,6 +296,29 @@ export function createChatHistoryController(chatService: ChatService): RequestHa
         customerContext: state.context,
         messages: history,
       },
+    });
+  });
+}
+
+export function createChatDeleteController(chatService: ChatService): RequestHandler {
+  return wrapAsync(async (req, res) => {
+    const customerId = z.string().min(1).parse(req.params.customerId);
+    const conversationId = z.string().min(1).parse(req.params.conversationId);
+    const authUser = (req as any).user;
+    
+    if (authUser?.linkedPatientPageIds && Array.isArray(authUser.linkedPatientPageIds) && authUser.linkedPatientPageIds.length > 0) {
+      const linked: string[] = authUser.linkedPatientPageIds;
+      if (!linked.includes(customerId)) {
+        res.status(403).json({ success: false, message: 'Forbidden: no access to requested patient' });
+        return;
+      }
+    }
+
+    await chatService.deleteSession(customerId, conversationId);
+
+    res.json({
+      success: true,
+      message: 'Session deleted successfully'
     });
   });
 }

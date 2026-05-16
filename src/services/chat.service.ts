@@ -2,6 +2,7 @@ import { env } from '../config/env';
 import type { ChatMessage, ConversationState, CustomerContext } from '../types/chat.types';
 import { createConversationId, createCustomerId, createMessageId } from '../utils/id';
 import type { NotionService } from './notion.service';
+import { logger } from '../utils/logger';
 
 export class ChatService {
   private readonly conversationsById = new Map<string, ConversationState>();
@@ -228,6 +229,38 @@ export class ChatService {
     conversation.context = mergedContext;
     await this.persistContext(mergedContext);
     return mergedContext;
+  }
+
+  public async getUserSessions(customerId: string): Promise<Array<{ id: string; title: string; lastUpdated: string }>> {
+    // Buscamos todas las consultas (sesiones) en Notion para este número de póliza / ID
+    const consultations = await this.notionService.getConsultationsByNumeroPoliza(customerId);
+    
+    return consultations.map(c => ({
+      id: c.pageId,
+      title: c.sintomaIngresado ? (c.sintomaIngresado.slice(0, 40) + (c.sintomaIngresado.length > 40 ? '...' : '')) : 'Nueva Consulta',
+      lastUpdated: new Date().toISOString() // Notion no siempre da la fecha de update por query simple, usamos actual por ahora
+    })).reverse(); // Mas recientes primero
+  }
+
+  public async deleteSession(customerId: string, conversationId: string): Promise<void> {
+    // 1. Buscamos los mensajes asociados a esta consulta para borrarlos también
+    const messages = await this.notionService.getMessagesByConversationId(conversationId, customerId);
+    
+    // 2. Archivamos todos los mensajes en Notion (solo si son IDs reales de Notion)
+    await Promise.all(messages.map(m => {
+      // Solo intentamos archivar si parece un ID real de Notion (UUID)
+      if (this.notionService.isRealNotionId(m.id)) {
+        return this.notionService.archivePage(m.id);
+      }
+      return Promise.resolve();
+    }));
+    
+    // 3. Archivamos la consulta principal (solo si es ID real)
+    if (this.notionService.isRealNotionId(conversationId)) {
+      await this.notionService.archivePage(conversationId);
+    }
+    
+    logger.info(`Session ${conversationId} and its messages deleted for customer ${customerId}`);
   }
 
   private async persistContext(context: CustomerContext): Promise<void> {
