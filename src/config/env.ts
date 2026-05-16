@@ -24,6 +24,8 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().optional().default(''),
   GEMINI_MODEL: z.string().default('gemini-1.5-flash'),
   NOTION_TOKEN: z.string().optional().default(''),
+  /** Timeout por petición al API de Notion (ms). Por defecto 120s para workspaces lentos o consultas grandes. */
+  NOTION_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
   DATABASE_ID_PLANES: z.string().optional().default(''),
   DATABASE_ID_ESPECIALIDADES: z.string().optional().default(''),
   DATABASE_ID_HOSPITALES: z.string().optional().default(''),
@@ -38,6 +40,18 @@ const envSchema = z.object({
   JWT_ACCESS_SECRET: z.string().optional().default(''),
   ACCESS_TOKEN_TTL: z.string().optional().default('15m'),
   USE_MOCK_NOTION: booleanFromEnv,
+  /**
+   * Obligatoria para enriquecer el hospital recomendado vía Tavily en cada consulta de chat que tenga recomendación.
+   * @see https://tavily.com
+   */
+  TAVILY_API_KEY: z.string().optional().default(''),
+  /**
+   * Si es true y existe hospital recomendado pero falta TAVILY_API_KEY, falla fetchBusinessData con error claro.
+   * Por defecto false para no romper entornos sin Tavily.
+   */
+  CHAT_STRICT_TAVILY: booleanFromEnv,
+  /** Refuerzo opcional (Google vía Serper); los fragmentos se fusionan con Tavily deduplicando URLs. https://serper.dev */
+  SERPER_API_KEY: z.string().optional().default(''),
 });
 
 export const env = envSchema.parse(process.env);

@@ -71,7 +71,7 @@ export function createCustomerController(chatService: ChatService, notionService
       });
 
       // Obtener el paciente por numeroPoliza
-      const patient = await notionService.findPatientByNumeroPoliza(customerId);
+      const patient = await notionService.findPatientByNumeroPolizaOrPageId(customerId);
       logger.info(`[COVERAGE] Resultado de búsqueda: ${patient ? 'ENCONTRADO ✓' : 'NO ENCONTRADO ✗'}`);
 
       if (!patient) {

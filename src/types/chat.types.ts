@@ -32,6 +32,9 @@ export interface CustomerContext {
   insuranceTier?: string;
   age?: number;
   city?: string;
+  /** Coordenadas opcionales para ordenar hospitales por cercanía (grados decimales). */
+  latitude?: number;
+  longitude?: number;
   language?: string;
   lastIntent?: string;
   lastSpecialty?: string;

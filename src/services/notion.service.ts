@@ -1,5 +1,6 @@
-import { Client } from '@notionhq/client';
+import { APIResponseError, Client } from '@notionhq/client';
 import { env } from '../config/env';
+import { logger } from '../utils/logger';
 import type { ChatMessage } from '../types/chat.types';
 import type {
   ConsultationRecord,
@@ -160,6 +161,21 @@ function pickFirstText(candidate: unknown): string {
   return typeof candidate === 'string' ? candidate : '';
 }
 
+/** Errores HTTP típicamente transitorios en API Notion / infraestructura (502/503/504) y rate limit (429). */
+const RETRIABLE_NOTION_STATUSES = new Set([429, 502, 503, 504]);
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetriableNotionError(error: unknown): boolean {
+  if (APIResponseError.isAPIResponseError(error)) {
+    return RETRIABLE_NOTION_STATUSES.has(error.status);
+  }
+  const msg = error instanceof Error ? error.message : String(error);
+  return /\b(?:429|502|503|504)\b/.test(msg);
+}
+
 export class NotionService {
   private readonly client: Client | null;
 
@@ -168,7 +184,13 @@ export class NotionService {
   private readonly mockDatabases = new Map<string, MockDatabaseRecord[]>();
 
   constructor() {
-    this.client = env.NOTION_TOKEN && !env.USE_MOCK_NOTION ? new Client({ auth: env.NOTION_TOKEN }) : null;
+    this.client =
+      env.NOTION_TOKEN && !env.USE_MOCK_NOTION
+        ? new Client({
+            auth: env.NOTION_TOKEN,
+            timeoutMs: env.NOTION_TIMEOUT_MS,
+          })
+        : null;
     
     if (!this.client) {
       this.seedMockData();
@@ -205,6 +227,7 @@ export class NotionService {
         Numero_Poliza: { title: [{ text: { content: 'POL-12345' } }] },
         Nombre_Completo: { rich_text: [{ text: { content: 'Juan Delgado' } }] },
         Plan_ID: { relation: [{ id: planPageId }] },
+        Deducible_Restante: { number: 200 },
         Email: { email: 'juan.delgado@email.com' }
       },
       createdAt: new Date().toISOString(),
@@ -235,13 +258,39 @@ export class NotionService {
     return !this.client;
   }
 
+  /** Reintenta llamadas ante 502/503/504/429 (fallos transitorios del API Notion). */
+  private async notionCallWithRetry<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+    const maxAttempts = 4;
+    const baseMs = 800;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastError = err;
+        if (!isRetriableNotionError(err) || attempt === maxAttempts) {
+          throw err;
+        }
+        const delay = baseMs * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
+        logger.warn(
+          `Notion ${operation}: error transitorio (intento ${attempt}/${maxAttempts}), siguiente reintento en ${delay}ms`,
+          err,
+        );
+        await sleep(delay);
+      }
+    }
+    throw lastError;
+  }
+
   public async getPage(pageId: string): Promise<NotionPageResult | null> {
     if (!this.client) {
       const record = this.mockPagesById.get(pageId);
       return record ? this.toPageResult(record) : null;
     }
 
-    return this.client.pages.retrieve({ page_id: pageId }) as Promise<NotionPageResult>;
+    return this.notionCallWithRetry('pages.retrieve', () =>
+      this.client!.pages.retrieve({ page_id: pageId }),
+    ) as Promise<NotionPageResult>;
   }
 
   public async queryDatabase(databaseId: string, options: NotionQueryOptions = {}): Promise<NotionPageResult[]> {
@@ -250,13 +299,15 @@ export class NotionService {
       return records.map((record) => this.toPageResult(record));
     }
 
-    const response = await this.client.databases.query({
-      database_id: databaseId,
-      filter: options.filter as any,
-      sorts: options.sorts as any,
-      page_size: options.pageSize,
-      start_cursor: options.startCursor,
-    } as any);
+    const response = await this.notionCallWithRetry('databases.query', () =>
+      this.client!.databases.query({
+        database_id: databaseId,
+        filter: options.filter as any,
+        sorts: options.sorts as any,
+        page_size: options.pageSize,
+        start_cursor: options.startCursor,
+      } as any),
+    );
 
     return response.results as NotionPageResult[];
   }
@@ -274,7 +325,9 @@ export class NotionService {
       };
     }
 
-    return this.client.databases.retrieve({ database_id: databaseId } as any) as Promise<any>;
+    return this.notionCallWithRetry('databases.retrieve', () =>
+      this.client!.databases.retrieve({ database_id: databaseId } as any),
+    ) as Promise<any>;
   }
 
   public async createPage(input: NotionCreatePageInput): Promise<NotionPageResult> {
@@ -294,14 +347,14 @@ export class NotionService {
       return this.toPageResult(record);
     }
 
-    return this.client.pages.create(
-      {
+    return this.notionCallWithRetry('pages.create', () =>
+      this.client!.pages.create({
         parent: {
           database_id: input.databaseId,
         },
         properties: input.properties,
         children: input.children,
-      } as any,
+      } as any),
     ) as Promise<NotionPageResult>;
   }
 
@@ -322,17 +375,73 @@ export class NotionService {
       } as NotionPageResult;
     }
 
-    return this.client.pages.update(
-      {
+    return this.notionCallWithRetry('pages.update', () =>
+      this.client!.pages.update({
         page_id: input.pageId,
         properties: input.properties,
-      } as any,
+      } as any),
     ) as Promise<NotionPageResult>;
   }
 
   public async findPatientByNumeroPoliza(numeroPoliza: string): Promise<PatientRecord | null> {
     const page = await this.findSingleByProperty(env.DATABASE_ID_PACIENTES, 'Numero_Poliza', numeroPoliza, 'title');
     return page ? this.mapPatient(page) : null;
+  }
+
+  /**
+   * Chat / sesión pueden usar `customerId` = número de póliza (title) o id de página del paciente en Notion.
+   */
+  public async findPatientByNumeroPolizaOrPageId(key: string): Promise<PatientRecord | null> {
+    const trimmed = key.trim();
+    if (!trimmed) return null;
+
+    const byPoliza = await this.findPatientByNumeroPoliza(trimmed);
+    if (byPoliza) return byPoliza;
+
+    const pageId = this.normalizeNotionUuid(trimmed);
+    if (!pageId) return null;
+
+    const page = await this.getPage(pageId);
+    if (!page?.properties) return null;
+
+    const parent = (page as NotionPageResult & { parent?: { type?: string; database_id?: string } }).parent;
+    if (parent?.type === 'database_id' && parent.database_id === env.DATABASE_ID_PACIENTES) {
+      return this.mapPatient(page);
+    }
+
+    return null;
+  }
+
+  /** Tarifa base en tabla RED por hospital maestro (plan + especialidad); una sola query a RED. */
+  public async buildTarifaBaseMapForPlanAndSpecialty(
+    planPageId: string,
+    specialtyPageId: string,
+  ): Promise<Map<string, number>> {
+    const pages = await this.queryDatabase(env.DATABASE_ID_HOSPITALES_RED);
+    const map = new Map<string, number>();
+    for (const candidate of pages) {
+      const planIds = extractRelationIds(candidate.properties.Planes_Aceptados);
+      const specialtyIds = extractRelationIds(candidate.properties.Especialidad_ID);
+      if (!planIds.includes(planPageId) || !specialtyIds.includes(specialtyPageId)) continue;
+      if (extractCheckboxValue(candidate.properties.Disponible) === false) continue;
+      const tb = extractNumberValue(candidate.properties.Tarifa_Base);
+      if (typeof tb !== 'number' || !Number.isFinite(tb) || tb <= 0) continue;
+      const hospIds = extractRelationIds(candidate.properties.Hospital_ID);
+      for (const hid of hospIds) {
+        map.set(hid, tb);
+      }
+    }
+    return map;
+  }
+
+  private normalizeNotionUuid(raw: string): string | null {
+    const t = raw.trim();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t)) {
+      return t;
+    }
+    const compact = t.replace(/-/g, '');
+    if (!/^[0-9a-f]{32}$/i.test(compact)) return null;
+    return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}`;
   }
 
   public async findPlanByIdPlan(idPlan: string): Promise<PlanRecord | null> {
@@ -350,6 +459,89 @@ export class NotionService {
     });
 
     return page ? this.mapSpecialty(page) : null;
+  }
+
+  /** Primera especialidad de atención primaria encontrada en la BD (una sola query). */
+  public async findPrimaryCareSpecialty(): Promise<SpecialtyRecord | null> {
+    const pages = await this.queryDatabase(env.DATABASE_ID_ESPECIALIDADES);
+    const needles = ['medicina general', 'medicina familiar', 'atencion primaria', 'atención primaria'];
+
+    for (const page of pages) {
+      const nombre = normalizeString(this.extract(page, 'Nombre'));
+      const idEsp = normalizeString(this.extract(page, 'ID_Especialidad'));
+      const haystack = `${nombre} ${idEsp}`;
+      if (needles.some((n) => haystack.includes(n))) {
+        return this.mapSpecialty(page);
+      }
+    }
+
+    return this.findSpecialtyByValue('Medicina General');
+  }
+
+  /**
+   * Por cada hospital (pageId del maestro), nombres de especialidades contratadas en RED para el plan.
+   * Carga RED + catálogo de especialidades en pocas queries (evita N llamadas retrieve por cada especialidad).
+   */
+  public async findHospitalSpecialtiesByPlan(planPageId: string): Promise<Map<string, string[]>> {
+    const [redPages, specialtyPages] = await Promise.all([
+      this.queryDatabase(env.DATABASE_ID_HOSPITALES_RED),
+      this.queryDatabase(env.DATABASE_ID_ESPECIALIDADES),
+    ]);
+
+    const hospitalToSpecIds = new Map<string, Set<string>>();
+
+    for (const candidate of redPages) {
+      const planIds = extractRelationIds(candidate.properties.Planes_Aceptados);
+      if (!planIds.includes(planPageId)) continue;
+      const disponible = extractCheckboxValue(candidate.properties.Disponible);
+      if (disponible === false) continue;
+      const hospIds = extractRelationIds(candidate.properties.Hospital_ID);
+      const specIds = extractRelationIds(candidate.properties.Especialidad_ID);
+      for (const hid of hospIds) {
+        if (!hospitalToSpecIds.has(hid)) hospitalToSpecIds.set(hid, new Set());
+        const set = hospitalToSpecIds.get(hid)!;
+        specIds.forEach((id) => set.add(id));
+      }
+    }
+
+    const nameBySpecId = new Map<string, string>();
+    for (const page of specialtyPages) {
+      const rec = this.mapSpecialty(page);
+      const label = rec.nombre ?? rec.idEspecialidad;
+      if (label) nameBySpecId.set(page.id, label);
+    }
+
+    const allSpecIds = [...new Set(Array.from(hospitalToSpecIds.values()).flatMap((s) => [...s]))];
+    const missing = allSpecIds.filter((id) => !nameBySpecId.has(id));
+
+    const chunkSize = 6;
+    for (let i = 0; i < missing.length; i += chunkSize) {
+      const chunk = missing.slice(i, i + chunkSize);
+      await Promise.all(
+        chunk.map(async (sid) => {
+          try {
+            const spec = await this.findSpecialtyByPageId(sid);
+            const label = spec?.nombre ?? spec?.idEspecialidad;
+            if (label) nameBySpecId.set(sid, label);
+          } catch {
+            /* relación huérfana o timeout puntual */
+          }
+        }),
+      );
+    }
+
+    const result = new Map<string, string[]>();
+    for (const [hid, specSet] of hospitalToSpecIds) {
+      const names = [...specSet].map((id) => nameBySpecId.get(id)).filter((x): x is string => Boolean(x));
+      result.set(hid, [...new Set(names)].sort((a, b) => a.localeCompare(b, 'es')));
+    }
+    return result;
+  }
+
+  /** Nombres de especialidades disponibles en un hospital concreto bajo el plan (tabla red). */
+  public async findSpecialtyNamesForHospitalAndPlan(planPageId: string, hospitalPageId: string): Promise<string[]> {
+    const byPlan = await this.findHospitalSpecialtiesByPlan(planPageId);
+    return byPlan.get(hospitalPageId) ?? [];
   }
 
   public async findCoverageByPlanAndSpecialty(planPageId: string, specialtyPageId: string): Promise<CoverageRecord | null> {
@@ -712,6 +904,11 @@ export class NotionService {
       numeroPoliza: extractTitleValue(page.properties.Numero_Poliza) || this.extract(page, 'Numero_Poliza'),
       nombreCompleto: this.extract(page, 'Nombre_Completo') || undefined,
       planPageId: extractRelationIds(page.properties.Plan_ID)[0],
+      deducibleRestante:
+        extractNumberValue(page.properties.Deducible_Restante) ??
+        extractNumberValue(page.properties.Deducible_Restante_USD) ??
+        extractNumberValue(page.properties.Deducible_Pendiente) ??
+        undefined,
       email: this.extract(page, 'Email') || undefined,
       telefono: this.extract(page, 'Telefono') || undefined,
       estado: this.extract(page, 'Estado') || undefined,
@@ -747,6 +944,15 @@ export class NotionService {
   }
 
   private mapHospital(page: NotionPageResult): HospitalRecord {
+    const carteraRaw = [
+      ...this.parseListProperty(page.properties.Cartera_Servicios),
+      ...this.parseListProperty(page.properties.Servicios),
+      ...this.parseListProperty(page.properties.Servicios_Disponibles),
+    ];
+    const carteraServicios = [...new Set(carteraRaw.map((s) => s.trim()).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b, 'es'),
+    );
+
     return {
       pageId: page.id,
       idHospital: extractTitleValue(page.properties.ID_Hospital) || this.extract(page, 'ID_Hospital'),
@@ -758,6 +964,7 @@ export class NotionService {
       longitud: extractNumberValue(page.properties.Longitud) ?? extractNumberValue(page.properties.Longitude),
       direccion: this.extract(page, 'direccion') || this.extract(page, 'Direccion') || this.extract(page, 'Address') || undefined,
       contacto: this.extract(page, 'contacto') || this.extract(page, 'Contacto') || this.extract(page, 'Telefono') || this.extract(page, 'Phone') || undefined,
+      carteraServicios: carteraServicios.length > 0 ? carteraServicios : undefined,
       raw: page.properties as Record<string, any>,
     };
   }

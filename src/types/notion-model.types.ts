@@ -32,12 +32,16 @@ export interface HospitalRecord extends NotionBaseRecord {
   longitud?: number;
   direccion?: string;
   contacto?: string;
+  /** Servicios/cartera declarados en maestro HOSPITALES (multi_select o texto separado por comas). */
+  carteraServicios?: string[];
 }
 
 export interface PatientRecord extends NotionBaseRecord {
   numeroPoliza: string;
   nombreCompleto?: string;
   planPageId?: string;
+  /** Monto restante del deducible anual del paciente (moneda del plan), si está en Notion. */
+  deducibleRestante?: number;
   email?: string;
   telefono?: string;
   estado?: string;

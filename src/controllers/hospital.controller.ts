@@ -2,7 +2,13 @@ import type { RequestHandler } from 'express';
 import { z } from 'zod';
 import { wrapAsync } from '../utils/async-handler';
 import type { NotionService } from '../services/notion.service';
+import type { BusinessService } from '../services/business.service';
 import { logger } from '../utils/logger';
+import {
+  fetchNearbyHealthFacilitiesFromOsm,
+  isNearAnyNotionHospital,
+  osmPoiToHospitalRow,
+} from '../services/osm-nearby-health.service';
 
 export interface NearbyHospitalResponse {
   id: string;
@@ -12,6 +18,12 @@ export interface NearbyHospitalResponse {
   activo: boolean;
   rating?: number;
   distancia?: number; // en km
+  /** Registros devueltos desde la BD maestra HOSPITALES (Notion) = incluidos en el modelo con cobertura de red. */
+  tieneCobertura?: boolean;
+  /** Cartera/servicios cargados en maestro Notion (vacío si no existe la propiedad). */
+  carteraServicios?: string[];
+  /** Copago estimado si se envió `numeroPoliza` y el paciente existe en Notion. */
+  copay?: number;
 }
 
 /**
@@ -28,7 +40,10 @@ function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
   return R * c;
 }
 
-export function createHospitalController(notionService: NotionService): {
+export function createHospitalController(
+  notionService: NotionService,
+  businessService: BusinessService,
+): {
   getNearbyHospitals: RequestHandler;
   geocodeHospital: RequestHandler;
   geocodeMissing: RequestHandler;
@@ -38,8 +53,15 @@ export function createHospitalController(notionService: NotionService): {
       const querySchema = z.object({
         latitude: z.coerce.number().optional(),
         longitude: z.coerce.number().optional(),
-        radius: z.coerce.number().optional().default(50), // km por defecto
+        radius: z.coerce.number().optional().default(50), // km por defecto (solo si catalog=false)
         specialty: z.string().optional(),
+        /** Póliza del paciente (mismo valor que customerId en chat) para estimar copago en el mapa. */
+        numeroPoliza: z.string().optional(),
+        /** true = todos los hospitales activos del maestro Notion (con cobertura); ordenados por distancia si hay GPS, sin filtro de radio */
+        catalog: z.preprocess(
+          (val) => val === true || val === 'true' || val === '1' || val === 'yes',
+          z.boolean(),
+        ),
       });
 
       const query = querySchema.parse(req.query);
@@ -65,22 +87,100 @@ export function createHospitalController(notionService: NotionService): {
           longitud: (h as any).longitud,
           direccion: (h as any).direccion,
           telefono: (h as any).contacto,
+          tieneCobertura: true as const,
+          carteraServicios: Array.isArray(h.carteraServicios) ? h.carteraServicios : [],
         }));
 
         const activeHospitals = allHospitals.filter((h: any) => h.activo !== false);
 
-        // Filtrar por distancia si se proporciona ubicación
-        let filteredHospitals: NearbyHospitalResponse[] = activeHospitals;
+        const userLat = query.latitude;
+        const userLon = query.longitude;
+        const hasUserGeo =
+          typeof userLat === 'number' &&
+          typeof userLon === 'number' &&
+          Number.isFinite(userLat) &&
+          Number.isFinite(userLon);
 
-        if (query.latitude && query.longitude) {
-          filteredHospitals = filteredHospitals
-            .map((h: NearbyHospitalResponse) => ({
+        const radiusKm = query.radius;
+        const catalogMode = query.catalog === true;
+
+        let filteredHospitals: NearbyHospitalResponse[] = [];
+
+        const withDistance = (list: typeof activeHospitals) =>
+          list.map((h: any) => {
+            const hl = h.latitud;
+            const ho = h.longitud;
+            const hospitalGeoOk =
+              typeof hl === 'number' &&
+              typeof ho === 'number' &&
+              Number.isFinite(hl) &&
+              Number.isFinite(ho) &&
+              !(Math.abs(hl) <= 1e-5 && Math.abs(ho) <= 1e-5);
+
+            return {
               ...h,
-              // Usar coordenadas estimadas de Ecuador como fallback
-              distancia: calculateDistance(query.latitude!, query.longitude!, -0.2, -78.5),
+              tieneCobertura: true,
+              distancia:
+                hasUserGeo && hospitalGeoOk ? calculateDistance(userLat, userLon, hl, ho) : undefined,
+            };
+          });
+
+        if (catalogMode) {
+          filteredHospitals = withDistance(activeHospitals).sort((a: any, b: any) => {
+            const da = a.distancia ?? Number.POSITIVE_INFINITY;
+            const db = b.distancia ?? Number.POSITIVE_INFINITY;
+            return da - db;
+          }) as NearbyHospitalResponse[];
+        } else if (hasUserGeo) {
+          const notionInRadius = withDistance(activeHospitals).filter(
+            (h: any) =>
+              typeof h.distancia === 'number' &&
+              Number.isFinite(h.distancia) &&
+              h.distancia <= radiusKm,
+          );
+
+          const notionCoordsForDedup = notionInRadius
+            .filter(
+              (h: any) =>
+                typeof h.latitud === 'number' &&
+                typeof h.longitud === 'number' &&
+                Number.isFinite(h.latitud) &&
+                Number.isFinite(h.longitud),
+            )
+            .map((h: any) => ({ lat: h.latitud as number, lon: h.longitud as number }));
+
+          let extras: Record<string, unknown>[] = [];
+          try {
+            const osmPois = await fetchNearbyHealthFacilitiesFromOsm(userLat!, userLon!, radiusKm);
+            for (const poi of osmPois) {
+              if (isNearAnyNotionHospital(poi.lat, poi.lon, notionCoordsForDedup)) continue;
+              extras.push(osmPoiToHospitalRow(poi, userLat!, userLon!));
+            }
+          } catch (osmErr) {
+            logger.warn('OpenStreetMap (Overpass) no disponible; solo hospitales Notion en radio.', osmErr);
+          }
+
+          filteredHospitals = [...notionInRadius, ...(extras as unknown as NearbyHospitalResponse[])].sort(
+            (a: any, b: any) => (a.distancia ?? 0) - (b.distancia ?? 0),
+          ) as NearbyHospitalResponse[];
+        } else {
+          filteredHospitals = activeHospitals
+            .map((h: any) => ({
+              ...h,
+              tieneCobertura: true,
+              distancia: undefined,
             }))
-            .filter((h: any) => !h.distancia || h.distancia <= query.radius)
-            .sort((a: any, b: any) => (a.distancia ?? 0) - (b.distancia ?? 0));
+            .sort((a: any, b: any) =>
+              String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es'),
+            ) as NearbyHospitalResponse[];
+        }
+
+        const polizaMap = query.numeroPoliza?.trim();
+        if (polizaMap && filteredHospitals.length > 0) {
+          filteredHospitals = (await businessService.enrichNearbyRowsWithEstimatedCopay(
+            polizaMap,
+            filteredHospitals as unknown as Record<string, unknown>[],
+          )) as unknown as NearbyHospitalResponse[];
         }
 
         res.json({
@@ -88,8 +188,11 @@ export function createHospitalController(notionService: NotionService): {
           data: {
             hospitales: filteredHospitals,
             total: filteredHospitals.length,
-            radio: query.radius,
-            ubicacion: query.latitude && query.longitude ? { lat: query.latitude, lon: query.longitude } : null,
+            radio: catalogMode ? null : radiusKm,
+            catalog: catalogMode,
+            /** Lista mixta: Notion (con cobertura) + OSM en radio (sin cobertura del plan). */
+            mixedNearby: !catalogMode && hasUserGeo,
+            ubicacion: hasUserGeo ? { lat: userLat, lon: userLon } : null,
           },
         });
       } catch (error) {

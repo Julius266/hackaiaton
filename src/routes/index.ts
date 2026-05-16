@@ -23,7 +23,7 @@ export function createApiRouter(deps: {
   if (deps.userService) router.use('/auth', createAuthRouter({ userService: deps.userService }));
   router.use('/customer', createCustomerRouter(deps.chatService, deps.notionService));
   router.use('/chat', createChatRouter(deps));
-  router.use('/hospital', createHospitalRouter(deps.notionService));
+  router.use('/hospital', createHospitalRouter(deps.notionService, deps.businessService));
 
   return router;
 }
