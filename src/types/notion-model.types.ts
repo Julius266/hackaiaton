@@ -28,6 +28,10 @@ export interface HospitalRecord extends NotionBaseRecord {
   ciudad?: string;
   nivelAtencion?: string;
   activo?: boolean;
+  latitud?: number;
+  longitud?: number;
+  direccion?: string;
+  contacto?: string;
 }
 
 export interface PatientRecord extends NotionBaseRecord {

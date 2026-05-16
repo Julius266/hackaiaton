@@ -10,6 +10,7 @@ import { logger } from '../utils/logger';
 const chatMessageSchema = z.object({
   customerId: z.string().optional(),
   numeroPoliza: z.string().optional(),
+  conversationId: z.string().optional(),
   message: z.string().min(1, 'El mensaje es obligatorio'),
   metadata: z.record(z.unknown()).optional(),
   customerContext: z
@@ -33,6 +34,7 @@ export function createChatMessageController(deps: {
   return wrapAsync(async (req, res) => {
     const payload = chatMessageSchema.parse(req.body);
     const authUser = (req as any).user;
+    const requestedConversationId = payload.conversationId;
 
     let customerId = payload.customerId ?? payload.numeroPoliza ?? createCustomerId();
 
@@ -58,9 +60,12 @@ export function createChatMessageController(deps: {
     const customerContext = await deps.chatService.updateCustomerContext(customerId, {
       ...payload.customerContext,
       metadata: payload.metadata,
+      conversationId: requestedConversationId,
     });
 
-    const historyBeforeAnswer = await deps.chatService.getConversationHistory(customerId);
+    const historyBeforeAnswer = requestedConversationId
+      ? await deps.chatService.getConversationHistory(customerId, requestedConversationId)
+      : [];
     
     logger.info('Analyzing symptoms with AI...');
     const analysis = await deps.aiService.analyzeSymptoms(payload.message, customerContext, historyBeforeAnswer);
@@ -75,6 +80,7 @@ export function createChatMessageController(deps: {
         ...customerContext,
         ...payload.customerContext,
       },
+      consultationPageId: requestedConversationId,
       analysis: {
         specialty: analysis.specialty,
         priority: analysis.priority,
@@ -83,11 +89,9 @@ export function createChatMessageController(deps: {
       },
     });
 
-    const consultationId = businessData.consultation.pageId;
-
     await deps.chatService.saveMessage({
       customerId,
-      conversationId: consultationId,
+      conversationId: businessData.consultation.pageId,
       role: 'user',
       content: payload.message,
       timestamp: new Date().toISOString(),
@@ -101,7 +105,7 @@ export function createChatMessageController(deps: {
         lastIntent: analysis.intent,
         lastPriority: analysis.priority,
         lastSpecialty: analysis.specialty,
-        consultationId,
+        consultationId: businessData.consultation.pageId,
         patientPageId: businessData.patient?.pageId,
         planPageId: businessData.plan?.pageId,
         specialtyPageId: businessData.specialty?.pageId,
@@ -109,22 +113,40 @@ export function createChatMessageController(deps: {
       },
       analysis,
       businessData,
-      history: [...historyBeforeAnswer], // Use history before adding current user message for simplicity or fetch full history again
+      history: [...historyBeforeAnswer],
     });
 
-    const assistantMessage = await deps.chatService.saveMessage({
-      customerId,
-      conversationId: consultationId,
-      role: 'assistant',
-      content: assistantMessageText,
-      timestamp: new Date().toISOString(),
-      metadata: {
-        analysis,
-        businessData,
-      },
-    });
+    const resolvedConversationId = businessData.consultation.pageId;
 
-    const finalHistory = await deps.chatService.getConversationHistory(customerId);
+    let assistantMessageContent = assistantMessageText;
+    try {
+      const assistantMessage = await deps.chatService.saveMessage({
+        customerId,
+        conversationId: resolvedConversationId,
+        role: 'assistant',
+        content: assistantMessageText,
+        timestamp: new Date().toISOString(),
+        metadata: {
+          analysis,
+          businessData,
+        },
+      });
+
+      assistantMessageContent = assistantMessage.content;
+    } catch (error) {
+      logger.warn(`No se pudo guardar el mensaje del asistente para ${customerId}: ${(error as Error).message}`);
+    }
+
+    let finalHistory = historyBeforeAnswer;
+    try {
+      finalHistory = await deps.chatService.getConversationHistory(customerId, resolvedConversationId);
+    } catch (error) {
+      logger.warn(`No se pudo reconstruir el historial final para ${customerId}: ${(error as Error).message}`);
+    }
+    const finalCustomerContext = {
+      ...customerContext,
+      conversationId: resolvedConversationId,
+    };
     
     logger.info(`Message processed successfully for ${customerId}`);
 
@@ -132,11 +154,12 @@ export function createChatMessageController(deps: {
       success: true,
       data: {
         customerId,
-        conversationId: consultationId,
+        conversationId: resolvedConversationId,
         analysis,
         businessData,
-        assistantMessage: assistantMessage.content,
+        assistantMessage: assistantMessageContent,
         history: finalHistory,
+        customerContext: finalCustomerContext,
       },
     });
   });
@@ -145,6 +168,7 @@ export function createChatMessageController(deps: {
 export function createChatHistoryController(chatService: ChatService): RequestHandler {
   return wrapAsync(async (req, res) => {
     const customerId = z.string().min(1).parse(req.params.customerId);
+    const conversationId = typeof req.query.conversationId === 'string' ? req.query.conversationId : undefined;
     const authUser = (req as any).user;
     if (authUser?.linkedPatientPageIds && Array.isArray(authUser.linkedPatientPageIds) && authUser.linkedPatientPageIds.length > 0) {
       const linked: string[] = authUser.linkedPatientPageIds;
@@ -153,8 +177,8 @@ export function createChatHistoryController(chatService: ChatService): RequestHa
         return;
       }
     }
-    const history = await chatService.getConversationHistory(customerId);
-    const state = await chatService.getConversationState(customerId);
+    const history = await chatService.getConversationHistory(customerId, conversationId);
+    const state = await chatService.getConversationState(customerId, conversationId);
 
     res.json({
       success: true,

@@ -22,6 +22,10 @@ function mapHospitalNetwork(record: HospitalNetworkRecord): HospitalCandidate {
     nivelAtencion: record.hospital?.nivelAtencion ?? nivelAtencion,
     activo: record.hospital?.activo,
     tarifaBase: record.tarifaBase,
+    latitud: record.hospital?.latitud as number | undefined,
+    longitud: record.hospital?.longitud as number | undefined,
+    direccion: record.hospital?.direccion as string | undefined,
+    contacto: record.hospital?.contacto as string | undefined,
     score: typeof record.tarifaBase === 'number' ? 100 - Math.min(record.tarifaBase / 10, 45) : 50,
     raw: record.raw,
   };
@@ -46,15 +50,21 @@ export class BusinessService {
       priority: input.analysis.priority,
       customerContext: input.customerContext,
     });
-    const consultation = await this.notionService.createConsultationRecord({
-      numeroPoliza: input.numeroPoliza,
-      patientPageId: patient?.pageId,
-      specialtyPageId: specialty?.pageId,
-      hospitalPageId: recommendedHospital?.pageId,
-      copagoEstimado: coverage.estimatedCopay,
-      sintomaIngresado: input.symptomText,
-      estadoConsulta: 'Abierta',
-    });
+    const consultation = input.consultationPageId
+      ? {
+          pageId: input.consultationPageId,
+          idConsulta: input.consultationPageId,
+          estadoConsulta: 'Abierta',
+        }
+      : await this.notionService.createConsultationRecord({
+          numeroPoliza: input.numeroPoliza,
+          patientPageId: patient?.pageId,
+          specialtyPageId: specialty?.pageId,
+          hospitalPageId: recommendedHospital?.pageId,
+          copagoEstimado: coverage.estimatedCopay,
+          sintomaIngresado: input.symptomText,
+          estadoConsulta: 'Abierta',
+        });
 
     return {
       numeroPoliza: input.numeroPoliza,

@@ -33,6 +33,8 @@ const envSchema = z.object({
   DATABASE_ID_CONSULTAS: z.string().optional().default(''),
   DATABASE_ID_SESIONES: z.string().optional().default(''),
   DATABASE_ID_USUARIOS: z.string().optional().default(''),
+  GEOCODING_PROVIDER: z.string().optional().default('google'),
+  GOOGLE_GEOCODING_API_KEY: z.string().optional().default(''),
   JWT_ACCESS_SECRET: z.string().optional().default(''),
   ACCESS_TOKEN_TTL: z.string().optional().default('15m'),
   USE_MOCK_NOTION: booleanFromEnv,

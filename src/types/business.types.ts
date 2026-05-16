@@ -17,6 +17,10 @@ export interface HospitalCandidate {
   tarifaBase?: number;
   score?: number;
   raw?: Record<string, unknown>;
+  latitud?: number;
+  longitud?: number;
+  direccion?: string;
+  contacto?: string;
 }
 
 export interface BusinessData {
@@ -68,6 +72,7 @@ export interface BusinessInput {
   numeroPoliza: string;
   symptomText: string;
   customerContext: Record<string, unknown>;
+  consultationPageId?: string;
   analysis: {
     specialty: string;
     priority: string;

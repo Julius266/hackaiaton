@@ -390,6 +390,67 @@ export class NotionService {
     return pages.filter((page) => wanted.has(page.id)).map((page) => this.mapHospital(page));
   }
 
+  // Geocoding helpers
+  public async geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
+    if (!address) return null;
+    if (!env.GOOGLE_GEOCODING_API_KEY || env.GEOCODING_PROVIDER !== 'google') {
+      // In mock mode or no API key, return null
+      return null;
+    }
+
+    const q = encodeURIComponent(address);
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${q}&key=${env.GOOGLE_GEOCODING_API_KEY}`;
+
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) return null;
+      const json: any = await resp.json();
+      if (json.status !== 'OK' || !Array.isArray(json.results) || json.results.length === 0) return null;
+      const loc = json.results[0].geometry.location;
+      return { lat: Number(loc.lat), lng: Number(loc.lng) };
+    } catch (error) {
+      // ignore and return null
+      return null;
+    }
+  }
+
+  public async geocodeAndPersistHospital(pageId: string): Promise<{ pageId: string; lat?: number; lng?: number; updated: boolean } | null> {
+    const page = await this.getPage(pageId);
+    if (!page) return null;
+    const address = this.extract(page, 'direccion') || this.extract(page, 'Direccion') || this.extract(page, 'Address');
+    if (!address) return { pageId, updated: false };
+
+    const coords = await this.geocodeAddress(address);
+    if (!coords) return { pageId, updated: false };
+
+    const properties: any = {};
+    properties.Latitud = toNumber(coords.lat);
+    properties.Longitud = toNumber(coords.lng);
+
+    await this.updatePage({ pageId, properties });
+
+    return { pageId, lat: coords.lat, lng: coords.lng, updated: true };
+  }
+
+  public async geocodeAllHospitalsMissing(): Promise<Array<{ pageId: string; lat?: number; lng?: number; updated: boolean }>> {
+    const pages = await this.queryDatabase(env.DATABASE_ID_HOSPITALES);
+    const results: Array<{ pageId: string; lat?: number; lng?: number; updated: boolean }> = [];
+
+    for (const page of pages) {
+      const lat = extractNumberValue(page.properties.Latitud) ?? extractNumberValue(page.properties.Latitude);
+      const lon = extractNumberValue(page.properties.Longitud) ?? extractNumberValue(page.properties.Longitude);
+      const address = extractTextValue(page.properties.Direccion) || extractTextValue(page.properties.direccion) || extractTextValue(page.properties.Address);
+      if ((typeof lat !== 'number' || typeof lon !== 'number') && address) {
+        // try to geocode
+        // eslint-disable-next-line no-await-in-loop
+        const r = await this.geocodeAndPersistHospital(page.id);
+        if (r) results.push(r);
+      }
+    }
+
+    return results;
+  }
+
   public async createConsultationRecord(input: {
     numeroPoliza: string;
     patientPageId?: string;
@@ -513,6 +574,24 @@ export class NotionService {
       });
   }
 
+  public async getMessagesByConversationId(conversationId: string, customerId: string): Promise<ChatMessage[]> {
+    const pages = await this.queryDatabase(env.DATABASE_ID_SESIONES);
+    return pages
+      .filter((page) => extractRelationIds(page.properties.Consulta_ID).includes(conversationId))
+      .map((page) => {
+        const session = this.mapSessionMessage(page);
+        return {
+          id: session.idMensaje,
+          customerId,
+          conversationId: session.consultationPageId ?? conversationId,
+          role: session.role,
+          content: session.mensaje,
+          timestamp: session.timestamp,
+          metadata: {},
+        } satisfies ChatMessage;
+      });
+  }
+
   public async getCustomerContext(numeroPoliza: string): Promise<Record<string, unknown> | null> {
     const patient = await this.findPatientByNumeroPoliza(numeroPoliza);
     const consultation = await this.getLatestConsultationByNumeroPoliza(numeroPoliza);
@@ -579,6 +658,24 @@ export class NotionService {
   public async findSpecialtyByPageId(pageId: string): Promise<SpecialtyRecord | null> {
     const page = await this.getPage(pageId);
     return page ? this.mapSpecialty(page) : null;
+  }
+
+  public async getCoveragesByPlanPageId(planPageId: string): Promise<Array<CoverageRecord & { specialty: SpecialtyRecord | null }>> {
+    const pages = await this.queryDatabase(env.DATABASE_ID_COBERTURAS);
+    const planCoverages = pages.filter((page) => {
+      const planIds = extractRelationIds(page.properties.Plan_ID);
+      return planIds.includes(planPageId);
+    });
+
+    const coverages = await Promise.all(
+      planCoverages.map(async (page) => {
+        const coverage = this.mapCoverage(page);
+        const specialty = coverage.specialtyPageId ? await this.findSpecialtyByPageId(coverage.specialtyPageId) : null;
+        return { ...coverage, specialty };
+      }),
+    );
+
+    return coverages;
   }
 
   public async findPatientByPageId(pageId: string): Promise<PatientRecord | null> {
@@ -657,6 +754,10 @@ export class NotionService {
       ciudad: this.extract(page, 'Ciudad') || undefined,
       nivelAtencion: this.extract(page, 'Nivel_Atencion') || undefined,
       activo: extractCheckboxValue(page.properties.Activo),
+      latitud: extractNumberValue(page.properties.Latitud) ?? extractNumberValue(page.properties.Latitude),
+      longitud: extractNumberValue(page.properties.Longitud) ?? extractNumberValue(page.properties.Longitude),
+      direccion: this.extract(page, 'direccion') || this.extract(page, 'Direccion') || this.extract(page, 'Address') || undefined,
+      contacto: this.extract(page, 'contacto') || this.extract(page, 'Contacto') || this.extract(page, 'Telefono') || this.extract(page, 'Phone') || undefined,
       raw: page.properties as Record<string, any>,
     };
   }

@@ -22,6 +22,7 @@ export interface CreateCustomerResponseData {
 export interface ChatMessageRequestBody {
   customerId?: string;
   numeroPoliza?: string;
+  conversationId?: string;
   message: string;
   metadata?: Record<string, unknown>;
   customerContext?: Partial<CustomerContext>;

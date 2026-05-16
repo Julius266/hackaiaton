@@ -136,9 +136,75 @@ function buildFollowUpQuestions(intent: string, specialty: string, priority: Sym
   return questions;
 }
 
+function compactCustomerContext(customerContext: CustomerContext): Record<string, unknown> {
+  return {
+    customerId: customerContext.customerId,
+    conversationId: customerContext.conversationId,
+    numeroPoliza: customerContext.numeroPoliza,
+    planType: customerContext.planType,
+    insuranceTier: customerContext.insuranceTier,
+    city: customerContext.city,
+    language: customerContext.language,
+    lastIntent: customerContext.lastIntent,
+    lastSpecialty: customerContext.lastSpecialty,
+    lastPriority: customerContext.lastPriority,
+    notes: customerContext.notes,
+  };
+}
+
+function compactHistory(history: ChatMessage[]): Array<Pick<ChatMessage, 'role' | 'content' | 'timestamp'>> {
+  return history.slice(-4).map((message) => ({
+    role: message.role,
+    content: message.content,
+    timestamp: message.timestamp,
+  }));
+}
+
+function buildBusinessFacts(businessData: BusinessData): Record<string, unknown> {
+  return {
+    numeroPoliza: businessData.numeroPoliza,
+    patient: businessData.patient
+      ? {
+          numeroPoliza: businessData.patient.numeroPoliza,
+          nombreCompleto: businessData.patient.nombreCompleto,
+        }
+      : null,
+    plan: businessData.plan
+      ? {
+          idPlan: businessData.plan.idPlan,
+          nombrePlan: businessData.plan.nombrePlan,
+          aseguradora: businessData.plan.aseguradora,
+          tipoPlan: businessData.plan.tipoPlan,
+        }
+      : null,
+    specialty: businessData.specialty
+      ? {
+          idEspecialidad: businessData.specialty.idEspecialidad,
+          nombre: businessData.specialty.nombre,
+        }
+      : null,
+    coverage: {
+      coveragePercent: businessData.coverage.coveragePercent,
+      coverageLabel: businessData.coverage.coverageLabel,
+      estimatedCopay: businessData.coverage.estimatedCopay,
+      currency: businessData.coverage.currency,
+    },
+    recommendedHospital: businessData.recommendedHospital
+      ? {
+          idHospital: businessData.recommendedHospital.idHospital,
+          nombre: businessData.recommendedHospital.nombre,
+          ciudad: businessData.recommendedHospital.ciudad,
+          nivelAtencion: businessData.recommendedHospital.nivelAtencion,
+        }
+      : null,
+    decisionNotes: businessData.decisionNotes.slice(0, 4),
+  };
+}
+
 export class AiService {
   public async analyzeSymptoms(message: string, customerContext: CustomerContext, history: ChatMessage[]): Promise<SymptomAnalysis> {
     const fallbackAnalysis = buildHeuristicAnalysis(message, customerContext);
+    const recentHistory = compactHistory(history);
 
     if (env.AI_PROVIDER === 'mock') {
       return fallbackAnalysis;
@@ -160,8 +226,8 @@ export class AiService {
         '  "structuredSignal": "string"',
         '}',
         '',
-        `Contexto de cliente: ${JSON.stringify(customerContext)}`,
-        `Historial reciente: ${JSON.stringify(history.slice(-6))}`,
+        `Contexto de cliente: ${JSON.stringify(compactCustomerContext(customerContext))}`,
+        `Historial reciente: ${JSON.stringify(recentHistory)}`,
         `Mensaje actual: ${message}`,
       ].join('\n');
 
@@ -202,6 +268,9 @@ export class AiService {
 
   public async generateFinalResponse(input: FinalResponseInput): Promise<string> {
     const fallback = this.buildFallbackFinalResponse(input.analysis, input.businessData);
+    const recentHistory = compactHistory(input.history);
+    const compactContext = compactCustomerContext(input.customerContext);
+    const businessFacts = buildBusinessFacts(input.businessData);
 
     if (env.AI_PROVIDER === 'mock') {
       return fallback;
@@ -212,9 +281,12 @@ export class AiService {
         FINAL_RESPONSE_PROMPT,
         '',
         `Análisis estructurado: ${JSON.stringify(input.analysis)}`,
-        `Datos de negocio: ${JSON.stringify(input.businessData)}`,
-        `Contexto de cliente: ${JSON.stringify(input.customerContext)}`,
-        `Historial reciente: ${JSON.stringify(input.history.slice(-8))}`,
+        `Datos requeridos detectados: ${JSON.stringify(input.analysis.requiredData)}`,
+        `Preguntas sugeridas por el análisis: ${JSON.stringify(input.analysis.followUpQuestions.slice(0, 2))}`,
+        `Datos útiles desde Notion: ${JSON.stringify(businessFacts)}`,
+        `Contexto de cliente: ${JSON.stringify(compactContext)}`,
+        `Historial reciente: ${JSON.stringify(recentHistory)}`,
+        'Si los datos de Notion están disponibles, responde con ellos primero y luego agrega una sola pregunta de seguimiento solo si hace falta.',
         '',
         'Responde solo en texto natural y útil para el paciente.',
       ].join('\n');
