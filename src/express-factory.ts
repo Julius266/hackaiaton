@@ -1,4 +1,4 @@
-import cors from 'cors';
+import cors, { type CorsOptions } from 'cors';
 import express, { Request, Response, NextFunction } from 'express';
 import { env } from './config/env';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
@@ -10,23 +10,53 @@ import { UserService } from './services/user.service';
 import { createApiRouter } from './routes';
 import { logger } from './utils/logger';
 
-function parseCorsOrigin(origin: string): string | string[] | boolean {
-  const trimmed = origin.trim();
-  if (trimmed === '' || trimmed === '*') {
-    /** Con `credentials: true`, el paquete `cors` debe reflejar el Origin (no literal `*`). */
-    return true;
+function normalizeOrigin(origin: string): string {
+  return origin.trim().replace(/\/$/, '');
+}
+
+/**
+ * El front usa JWT en `Authorization` pero fetch sin `credentials: 'include'`.
+ * Con `credentials: false`, `Access-Control-Allow-Origin: *` es válido en preflight y evita
+ * combinaciones frágiles `Allow-Credentials: true` + reflejo de Origin.
+ */
+function buildCorsOptions(): CorsOptions {
+  const raw = normalizeOrigin(env.CORS_ORIGIN);
+
+  if (raw === '' || raw === '*') {
+    return {
+      origin: '*',
+      credentials: false,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+      optionsSuccessStatus: 204,
+      maxAge: 86_400,
+    };
   }
 
-  const values = trimmed
+  const allowed = raw
     .split(',')
-    .map((entry) => entry.trim())
+    .map((entry) => normalizeOrigin(entry))
     .filter(Boolean);
 
-  if (values.length === 0) {
-    return true;
-  }
-
-  return values.length === 1 ? values[0] : values;
+  return {
+    origin: (requestOrigin, callback) => {
+      if (!requestOrigin) {
+        callback(null, allowed[0] ?? true);
+        return;
+      }
+      const n = normalizeOrigin(requestOrigin);
+      if (allowed.includes(n)) {
+        callback(null, requestOrigin);
+        return;
+      }
+      callback(new Error(`CORS: origin no permitido (${requestOrigin})`));
+    },
+    credentials: false,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    optionsSuccessStatus: 204,
+    maxAge: 86_400,
+  };
 }
 
 export function createApp() {
@@ -38,6 +68,8 @@ export function createApp() {
 
   const app = express();
 
+  app.use(cors(buildCorsOptions()));
+
   // Request logging middleware
   app.use((req: Request, res: Response, next: NextFunction) => {
     const start = Date.now();
@@ -47,15 +79,6 @@ export function createApp() {
     });
     next();
   });
-
-  app.use(
-    cors({
-      origin: parseCorsOrigin(env.CORS_ORIGIN),
-      credentials: true,
-      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
-    }),
-  );
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
 
