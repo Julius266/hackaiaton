@@ -161,8 +161,8 @@ En el chat, `customerId` y `numeroPoliza` se tratan como alias del identificador
 
 Notas:
 
-- El plan Hobby limita **duración** de funciones (~10 s); el chat con IA/Notion puede necesitar **Pro** o optimizar. Este proyecto fija `maxDuration: 60` para `src/server.ts` en `vercel.json` (requiere límites compatibles en tu plan).
-- Vercel solo reconoce Express en rutas como `src/server.ts` (no en `api/index.ts`). La entrada es **`src/server.ts`**: importa `express`, construye la app con `createApp()` y exporta `default` para producción; en local usa `app.listen` cuando ejecutas `npm run dev` / `npm start`.
+- El plan Hobby limita **duración** de funciones (~10 s); el chat con IA/Notion puede necesitar **Pro** o optimizar. Este proyecto fija `maxDuration: 60` para `src/app.ts` en `vercel.json` (requiere límites compatibles en tu plan).
+- Vercel empaqueta la app Express como **`src/app.ts`** → `src/app.js` (export por defecto de la instancia Express). **`src/server.ts`** solo importa esa app y ejecuta `listen` en local (`npm run dev` / `npm start`).
 - Prueba rápida tras deploy: `GET https://<proyecto>.vercel.app/api/health`. Si la raíz `/` no tiene ruta propia, puede responder 404; la API sigue bajo `/api/...`.
 - Si ves **FUNCTION_INVOCATION_FAILED**, revisa **Logs** en Vercel y variables (`AI_PROVIDER`, `PORT`, etc.): valores vacíos o inválidos ya no deberían tumbar el arranque gracias al parseo tolerante en `env.ts`.
 

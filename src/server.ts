@@ -1,11 +1,5 @@
-import express from 'express';
 import { env } from './config/env';
-import { createApp } from './express-factory';
-
-const app = createApp();
-
-/** Satisfies tooling that expects `express` referenced from this entry file. */
-void express;
+import app from './app';
 
 export default app;
 
