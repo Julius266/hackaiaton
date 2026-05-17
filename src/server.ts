@@ -1,4 +1,4 @@
-import { createApp } from './app';
+import { createApp } from './express-factory';
 import { env } from './config/env';
 
 const app = createApp();

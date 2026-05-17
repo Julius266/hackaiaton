@@ -1,7 +1,15 @@
 /**
- * Vercel + Express 4: exportar la app por defecto (sin wrapper manual req/res).
- * @see https://vercel.com/docs/frameworks/backend/express
+ * Vercel + Express: default export must be a function or Connect-style server.
+ * Avoid naming the factory module `app.ts` — Vercel auto-detects it as the Express entry.
  */
-import { createApp } from '../src/app';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { createApp } from '../src/express-factory';
 
-export default createApp();
+let cached: ReturnType<typeof createApp> | undefined;
+
+export default function handler(req: VercelRequest, res: VercelResponse): void {
+  if (!cached) {
+    cached = createApp();
+  }
+  cached(req as never, res as never);
+}
