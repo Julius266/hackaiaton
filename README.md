@@ -151,6 +151,21 @@ Si no hay credenciales o bases configuradas, el backend puede operar en modo moc
 
 En el chat, `customerId` y `numeroPoliza` se tratan como alias del identificador del paciente.
 
+## Deploy en Vercel (backend)
+
+1. En [Vercel](https://vercel.com), **New Project** → importa el repo y define **Root Directory** como `hackaiaton` (si el repo es monorepo).
+2. Copia las variables de tu `.env` al panel **Settings → Environment Variables** (producción como mínimo): `NOTION_TOKEN`, IDs de bases, `JWT_ACCESS_SECRET`, `CORS_ORIGIN`, claves de IA, `TAVILY_API_KEY`, etc.
+3. **`CORS_ORIGIN`**: pon la URL del frontend (ej. `https://tu-app.vercel.app`) o `*` solo para pruebas.
+4. Tras el deploy, la API queda en `https://<proyecto>.vercel.app/api/...` (mismas rutas que en local).
+5. En el frontend (`hackia-front`), define **`VITE_API_URL=https://<proyecto>.vercel.app`** al construir o en el proyecto de Vercel del front.
+
+Notas:
+
+- El plan Hobby limita **duración** de funciones (~10 s); el chat con IA/Notion puede necesitar **Pro** o optimizar. Este proyecto fija `maxDuration: 60` en `vercel.json` (requiere límites compatibles en tu plan).
+- La entrada serverless está en `api/index.ts`: se exporta la app Express por defecto (compatible con el runtime de Vercel).
+- Prueba rápida tras deploy: `GET https://<proyecto>.vercel.app/api/health`. Si la raíz `/` devuelve 404, es normal: las rutas viven bajo `/api/...`.
+- Si ves **FUNCTION_INVOCATION_FAILED**, revisa **Logs** en Vercel y variables (`AI_PROVIDER`, `PORT`, etc.): valores vacíos o inválidos ya no deberían tumbar el arranque gracias al parseo tolerante en `env.ts`.
+
 ## Siguientes pasos sugeridos
 
 1. Conectar bases reales de Notion.

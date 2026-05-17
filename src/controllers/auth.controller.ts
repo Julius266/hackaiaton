@@ -16,13 +16,14 @@ const registerSchema = z.object({
   linkedPatientPageIds: z.array(z.string()).optional(),
 });
 
-export function createAuthController(deps: { userService: UserService }): { 
-  login: RequestHandler; 
-  register: RequestHandler; 
-  updateProfile: RequestHandler; 
+export function createAuthController(deps: { userService: UserService }): {
+  login: RequestHandler;
+  register: RequestHandler;
+  updateProfile: RequestHandler;
   updatePassword: RequestHandler;
   requestCode: RequestHandler;
   verifyAndChangePassword: RequestHandler;
+  deleteAccount: RequestHandler;
 } {
   return {
     login: wrapAsync(async (req, res) => {

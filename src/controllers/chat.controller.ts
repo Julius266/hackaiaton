@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { AiService } from '../services/ai.service';
 import type { BusinessService } from '../services/business.service';
 import type { ChatService } from '../services/chat.service';
+import type { NotionService } from '../services/notion.service';
 import type { ChatProgressPayload } from '../types/chat-progress.types';
 import { wrapAsync } from '../utils/async-handler';
 import { createCustomerId } from '../utils/id';
@@ -35,6 +36,7 @@ export function createChatMessageController(deps: {
   aiService: AiService;
   businessService: BusinessService;
   chatService: ChatService;
+  notionService: NotionService;
 }): RequestHandler {
   return wrapAsync(async (req, res) => {
     const payload = chatMessageSchema.parse(req.body);

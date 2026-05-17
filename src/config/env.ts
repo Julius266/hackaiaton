@@ -10,10 +10,12 @@ const booleanFromEnv = z
   .transform((value) => ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase()));
 
 const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().positive().default(3000),
+  /** Vercel u otros hosts pueden enviar valores no listados; normalizamos para no tumbar el arranque. */
+  NODE_ENV: z.enum(['development', 'test', 'production']).catch('production'),
+  /** En serverless `PORT` suele ir vacío o a 0; un valor inválido antes rompía zod.parse al cargar el módulo. */
+  PORT: z.coerce.number().int().positive().catch(3000),
   CORS_ORIGIN: z.string().default('*'),
-  AI_PROVIDER: z.enum(['mock', 'openrouter', 'openai', 'gemini']).default('mock'),
+  AI_PROVIDER: z.enum(['mock', 'openrouter', 'openai', 'gemini']).catch('mock'),
   AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
   OPENROUTER_API_KEY: z.string().optional().default(''),
   OPENROUTER_BASE_URL: z.string().default('https://openrouter.ai/api/v1'),

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { AiService } from '../services/ai.service';
 import type { BusinessService } from '../services/business.service';
 import type { ChatService } from '../services/chat.service';
+import type { NotionService } from '../services/notion.service';
 import type { UserService } from '../services/user.service';
 import { createChatHistoryController, createChatMessageController, createChatDeleteController } from '../controllers/chat.controller';
 import { createAuthMiddleware } from '../middlewares/auth.middleware';
@@ -10,6 +11,7 @@ export function createChatRouter(deps: {
   aiService: AiService;
   businessService: BusinessService;
   chatService: ChatService;
+  notionService: NotionService;
   userService?: UserService;
 }): Router {
   const router = Router();

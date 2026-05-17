@@ -432,7 +432,12 @@ export class NotionService {
     }
 
     const parent = (page as NotionPageResult & { parent?: { type?: string; database_id?: string } }).parent;
-    if (parent?.type === 'database_id' && this.normalizeNotionUuid(parent.database_id) === this.normalizeNotionUuid(env.DATABASE_ID_PACIENTES)) {
+    const parentDbId = parent?.database_id;
+    if (
+      parent?.type === 'database_id' &&
+      typeof parentDbId === 'string' &&
+      this.normalizeNotionUuid(parentDbId) === this.normalizeNotionUuid(env.DATABASE_ID_PACIENTES)
+    ) {
       return this.mapPatient(page);
     }
 
