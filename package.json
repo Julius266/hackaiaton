@@ -10,7 +10,7 @@
     "start": "node dist/server.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": "20.x"
   },
   "dependencies": {
     "@notionhq/client": "^2.3.0",
