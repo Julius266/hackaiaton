@@ -86,9 +86,12 @@ export interface SessionMessageRecord extends NotionBaseRecord {
 }
 
 export interface UserRecord extends NotionBaseRecord {
+  userId?: string;
   email?: string;
   passwordHash?: string;
   role?: string;
+  nombre?: string;
+  activo?: boolean;
   linkedPatientPageIds?: string[];
   resetCode?: string;
   resetCodeExpiry?: string;

@@ -316,6 +316,45 @@ export class NotionService {
     return response.results as NotionPageResult[];
   }
 
+  public async queryDatabaseWithCursor(
+    databaseId: string,
+    options: NotionQueryOptions = {},
+  ): Promise<{ results: NotionPageResult[]; hasMore: boolean; nextCursor: string | null }> {
+    if (!this.client) {
+      const pageSize = options.pageSize ?? 20;
+      const allRecords = this.mockDatabases.get(databaseId) ?? [];
+      const results = allRecords.slice(0, pageSize).map((r) => this.toPageResult(r));
+      return { results, hasMore: false, nextCursor: null };
+    }
+
+    const response = await this.notionCallWithRetry('databases.query', () =>
+      this.client!.databases.query({
+        database_id: databaseId,
+        filter: options.filter as any,
+        sorts: options.sorts as any,
+        page_size: options.pageSize,
+        start_cursor: options.startCursor,
+      } as any),
+    );
+
+    return {
+      results: response.results as NotionPageResult[],
+      hasMore: response.has_more,
+      nextCursor: response.next_cursor ?? null,
+    };
+  }
+
+  public async listUsers(
+    pageSize = 20,
+    cursor?: string,
+  ): Promise<{ users: import('../types/notion-model.types').UserRecord[]; hasMore: boolean; nextCursor: string | null }> {
+    const { results, hasMore, nextCursor } = await this.queryDatabaseWithCursor(
+      env.DATABASE_ID_USUARIOS,
+      { pageSize, startCursor: cursor },
+    );
+    return { users: results.map((p) => this.mapUser(p)), hasMore, nextCursor };
+  }
+
   public async getDatabase(databaseId: string): Promise<any> {
     if (!this.client) {
       // in mock mode return a minimal structure
@@ -929,6 +968,38 @@ export class NotionService {
     return page ? this.mapPlan(page) : null;
   }
 
+  public async getAllPlans(): Promise<PlanRecord[]> {
+    const pages = await this.queryDatabase(env.DATABASE_ID_PLANES);
+    return pages.map((p) => this.mapPlan(p));
+  }
+
+  public async createPatient(input: {
+    numeroPoliza: string;
+    email: string;
+    nombreCompleto: string;
+    planPageId?: string;
+    deducibleRestante?: number;
+    estado?: string;
+  }): Promise<PatientRecord> {
+    const properties: Record<string, unknown> = {
+      Numero_Poliza: { title: [{ text: { content: input.numeroPoliza } }] },
+      Nombre_Completo: { rich_text: [{ text: { content: input.nombreCompleto } }] },
+      Email: { email: input.email },
+      Estado: { select: { name: input.estado ?? 'Activo' } },
+    };
+
+    if (input.planPageId) {
+      properties.Plan_ID = { relation: [{ id: input.planPageId }] };
+    }
+
+    if (typeof input.deducibleRestante === 'number') {
+      properties.Deducible_Restante = { number: input.deducibleRestante };
+    }
+
+    const page = await this.createPage({ databaseId: env.DATABASE_ID_PACIENTES, properties });
+    return this.mapPatient(page);
+  }
+
   public async findSpecialtyByPageId(pageId: string): Promise<SpecialtyRecord | null> {
     const page = await this.getPage(pageId);
     return page ? this.mapSpecialty(page) : null;
@@ -1115,21 +1186,28 @@ export class NotionService {
   public mapUser(page: NotionPageResult): UserRecord {
     const emailProperty = page.properties?.Email;
     const email = typeof emailProperty?.email === 'string' ? emailProperty.email : this.extract(page, 'Email') || undefined;
+    const userId = extractTitleValue(page.properties.User_ID) || this.extract(page, 'User_ID') || undefined;
     const passwordHash = this.extract(page, 'Password_Hash') || undefined;
-    const role = this.extract(page, 'rol') || this.extract(page, 'role') || undefined;
+    const propKeys = Object.keys(page.properties || {});
+    const roleKey = propKeys.find((k) => /^ro?l[e]?$/i.test(k));
+    const role = roleKey ? (this.extract(page, roleKey) || undefined) : undefined;
+    const nombre = this.extract(page, 'Nombre') || undefined;
+    const activo = extractCheckboxValue(page.properties.Activo);
     const resetCode = this.extract(page, 'Reset_Code') || undefined;
     const resetCodeExpiry = this.extract(page, 'Reset_Code_Expiry') || undefined;
 
     // attempt to find linked patient relation property
-    const propKeys = Object.keys(page.properties || {});
     const candidateKey = propKeys.find((k) => /pacient/i.test(k) || /paciente/i.test(k) || /patient/i.test(k));
     const linkedPatientPageIds = candidateKey ? extractRelationIds(page.properties[candidateKey]) : [];
 
     return {
       pageId: page.id,
+      userId,
       email,
       passwordHash,
       role,
+      nombre,
+      activo,
       linkedPatientPageIds,
       resetCode,
       resetCodeExpiry,

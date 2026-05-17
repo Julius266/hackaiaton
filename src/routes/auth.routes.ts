@@ -10,6 +10,7 @@ export function createAuthRouter(deps: { userService: UserService }): Router {
 
   router.post('/login', controller.login);
   router.post('/register', controller.register);
+  router.get('/users', auth, controller.listUsers);
   router.put('/profile', auth, controller.updateProfile);
   router.put('/password', auth, controller.updatePassword);
   router.post('/request-code', auth, controller.requestCode);

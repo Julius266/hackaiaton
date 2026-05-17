@@ -13,6 +13,8 @@ const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
   role: z.string().min(1),
+  nombre: z.string().min(1),
+  activo: z.boolean().optional(),
   linkedPatientPageIds: z.array(z.string()).optional(),
 });
 
@@ -24,6 +26,7 @@ export function createAuthController(deps: { userService: UserService }): {
   requestCode: RequestHandler;
   verifyAndChangePassword: RequestHandler;
   deleteAccount: RequestHandler;
+  listUsers: RequestHandler;
 } {
   return {
     login: wrapAsync(async (req, res) => {
@@ -47,12 +50,13 @@ export function createAuthController(deps: { userService: UserService }): {
         success: true, 
         data: { 
           accessToken: token, 
-          user: { 
-            id: user.pageId, 
+          user: {
+            id: user.pageId,
             patientId,
-            email: user.email, 
-            role: user.role 
-          } 
+            email: user.email,
+            role: user.role,
+            nombre: user.nombre,
+          }
         } 
       });
       return;
@@ -61,7 +65,7 @@ export function createAuthController(deps: { userService: UserService }): {
     register: wrapAsync(async (req, res) => {
       const payload = registerSchema.parse(req.body);
       logger.info(`Registering new user with email: ${payload.email}`);
-      
+
       const user = await deps.userService.registerUser(payload);
 
       logger.info(`User registered successfully: ${user.pageId}`);
@@ -69,9 +73,35 @@ export function createAuthController(deps: { userService: UserService }): {
         success: true,
         data: {
           id: user.pageId,
+          userId: user.userId,
           email: user.email,
           role: user.role,
+          nombre: user.nombre,
+          activo: user.activo,
           linkedPatientPageIds: user.linkedPatientPageIds,
+        },
+      });
+    }),
+
+    listUsers: wrapAsync(async (req, res) => {
+      const pageSize = Math.min(Number(req.query.pageSize) || 20, 100);
+      const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
+
+      const { users, hasMore, nextCursor } = await deps.userService.listUsers(pageSize, cursor);
+
+      res.json({
+        success: true,
+        data: users.map((u) => ({
+          id: u.userId,
+          email: u.email,
+          nombre: u.nombre,
+          rol: u.role,
+          activo: u.activo,
+          pacientes: u.linkedPatientPageIds,
+        })),
+        pagination: {
+          hasMore,
+          nextCursor,
         },
       });
     }),

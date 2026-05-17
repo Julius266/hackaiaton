@@ -4,6 +4,7 @@ import { env } from '../config/env';
 import { NotionService } from './notion.service';
 import { ChatService } from './chat.service';
 import { logger } from '../utils/logger';
+import { createUserId } from '../utils/id';
 import type { UserRecord } from '../types/notion-model.types';
 
 export class UserService {
@@ -40,15 +41,21 @@ export class UserService {
     return this.notion.getUserLinkedPatientIds(userId);
   }
 
+  public async listUsers(pageSize = 20, cursor?: string) {
+    return this.notion.listUsers(pageSize, cursor);
+  }
+
   public async registerUser(input: {
     email: string;
     password: string;
     role: string;
+    nombre?: string;
+    activo?: boolean;
     linkedPatientPageIds?: string[];
-    name?: string; // Permitimos name para el nombre del paciente
   }): Promise<UserRecord> {
     const hashedPassword = await bcrypt.hash(input.password, 10);
-    
+    const userId = createUserId();
+
     let patientIds = input.linkedPatientPageIds || [];
 
     // Auto-creamos un paciente en Notion para garantizar que el historial se guarde y sincronice
@@ -58,7 +65,7 @@ export class UserService {
           databaseId: env.DATABASE_ID_PACIENTES,
           properties: {
             Numero_Poliza: { title: [{ text: { content: `POL-${Date.now().toString().slice(-6)}` } }] },
-            Nombre_Completo: { rich_text: [{ text: { content: input.name || input.email.split('@')[0] } }] },
+            Nombre_Completo: { rich_text: [{ text: { content: input.nombre || input.email.split('@')[0] } }] },
             Email: { email: input.email },
           }
         });
@@ -94,6 +101,21 @@ export class UserService {
       const t = dbProps[roleKey].type;
       if (t === 'select' || t === 'multi_select') properties[roleKey] = { select: { name: input.role } };
       else properties[roleKey] = { rich_text: [{ text: { content: input.role } }] };
+    }
+
+    // Nombre: save to 'Nombre' property if it exists
+    if (input.nombre && dbProps.Nombre) {
+      properties.Nombre = { rich_text: [{ text: { content: input.nombre } }] };
+    }
+
+    // Activo: checkbox property
+    if (dbProps.Activo) {
+      properties.Activo = { checkbox: input.activo ?? true };
+    }
+
+    // User_ID: unique identifier generated at registration time (title field in Notion)
+    if (dbProps.User_ID) {
+      properties.User_ID = { title: [{ text: { content: userId } }] };
     }
 
     // Linked patients: find a relation property that matches patient keyword

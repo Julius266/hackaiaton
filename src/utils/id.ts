@@ -1,5 +1,9 @@
 import { randomUUID } from 'crypto';
 
+export function createUserId(): string {
+  return `usr_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+}
+
 export function createCustomerId(): string {
   return `cust_${randomUUID().slice(0, 12)}`;
 }
