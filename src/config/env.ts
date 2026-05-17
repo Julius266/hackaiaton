@@ -14,7 +14,14 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).catch('production'),
   /** En serverless `PORT` suele ir vacío o a 0; un valor inválido antes rompía zod.parse al cargar el módulo. */
   PORT: z.coerce.number().int().positive().catch(3000),
-  CORS_ORIGIN: z.string().default('*'),
+  /** Vacío en Vercel deja de aplicar el default de Zod y rompe CORS (sin header Allow-Origin). */
+  CORS_ORIGIN: z
+    .string()
+    .optional()
+    .transform((value) => {
+      const trimmed = (value ?? '').trim();
+      return trimmed === '' ? '*' : trimmed;
+    }),
   AI_PROVIDER: z.enum(['mock', 'openrouter', 'openai', 'gemini']).catch('mock'),
   AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
   OPENROUTER_API_KEY: z.string().optional().default(''),

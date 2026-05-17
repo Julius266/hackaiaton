@@ -11,14 +11,20 @@ import { createApiRouter } from './routes';
 import { logger } from './utils/logger';
 
 function parseCorsOrigin(origin: string): string | string[] | boolean {
-  if (origin.trim() === '*') {
+  const trimmed = origin.trim();
+  if (trimmed === '' || trimmed === '*') {
+    /** Con `credentials: true`, el paquete `cors` debe reflejar el Origin (no literal `*`). */
     return true;
   }
 
-  const values = origin
+  const values = trimmed
     .split(',')
     .map((entry) => entry.trim())
     .filter(Boolean);
+
+  if (values.length === 0) {
+    return true;
+  }
 
   return values.length === 1 ? values[0] : values;
 }
@@ -46,6 +52,8 @@ export function createApp() {
     cors({
       origin: parseCorsOrigin(env.CORS_ORIGIN),
       credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
     }),
   );
   app.use(express.json({ limit: '1mb' }));
