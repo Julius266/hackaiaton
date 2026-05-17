@@ -58,26 +58,15 @@ export function createCustomerController(chatService: ChatService, notionService
     const { customerId } = paramsSchema.parse(req.params);
 
     try {
-      logger.info(`[COVERAGE] Buscando paciente con numeroPoliza: "${customerId}"`);
+      logger.info(`[COVERAGE] Buscando paciente con Numero_Poliza (User_ID): "${customerId}"`);
 
-      // DEBUG: Obtener todos los pacientes en la BD para ver qué hay
-      const env = await import('../config/env');
-      const allPacientes = await (notionService as any).queryDatabase(env.env.DATABASE_ID_PACIENTES);
-      logger.info(`[COVERAGE] Total de pacientes en BD: ${allPacientes.length}`);
-      allPacientes.forEach((p: any, idx: number) => {
-        const numeroPoliza = (notionService as any).extract?.(p, 'Numero_Poliza') || 'SIN NUMERO';
-        const nombre = (notionService as any).extract?.(p, 'Nombre_Completo') || 'SIN NOMBRE';
-        logger.info(`  [${idx}] numeroPoliza="${numeroPoliza}" | nombre="${nombre}"`);
-      });
-
-      // Obtener el paciente por numeroPoliza
-      const patient = await notionService.findPatientByNumeroPolizaOrPageId(customerId);
-      logger.info(`[COVERAGE] Resultado de búsqueda: ${patient ? 'ENCONTRADO ✓' : 'NO ENCONTRADO ✗'}`);
+      const patient = await notionService.findPatientByNumeroPoliza(customerId);
+      logger.info(`[COVERAGE] Paciente: ${patient ? 'ENCONTRADO ✓' : 'NO ENCONTRADO ✗'}`);
 
       if (!patient) {
         res.status(404).json({
           success: false,
-          message: `Paciente no encontrado. Se buscó: "${customerId}". Ver logs del servidor para pacientes disponibles.`,
+          message: `Paciente no encontrado con Numero_Poliza: "${customerId}"`,
         });
         return;
       }

@@ -41,6 +41,10 @@ export class UserService {
     return this.notion.getUserLinkedPatientIds(userId);
   }
 
+  public async findByUserId(userId: string) {
+    return this.notion.findUserByUserId(userId);
+  }
+
   public async listUsers(pageSize = 20, cursor?: string) {
     return this.notion.listUsers(pageSize, cursor);
   }
@@ -134,15 +138,20 @@ export class UserService {
     return this.notion.mapUser(page);
   }
 
-  public async updateProfile(userId: string, data: { name?: string; email?: string }): Promise<UserRecord | null> {
+  public async updateProfile(userId: string, data: { nombre?: string; email?: string; rol?: string; activo?: boolean }): Promise<UserRecord | null> {
     const properties: Record<string, any> = {};
     if (data.email) {
-      properties.Email = { title: [{ text: { content: data.email } }] };
+      properties.Email = { email: data.email };
     }
-    // Note: In this schema, 'Name' might not exist in the users DB directly, 
-    // but we can try to update it if it's there or update the linked patient.
-    // For now, let's just update the user record properties that exist.
-    
+    if (data.nombre) {
+      properties.Nombre = { rich_text: [{ text: { content: data.nombre } }] };
+    }
+    if (data.rol) {
+      properties.Rol = { select: { name: data.rol } };
+    }
+    if (data.activo !== undefined) {
+      properties.Activo = { checkbox: data.activo };
+    }
     const page = await this.notion.updatePage({
       pageId: userId,
       properties,

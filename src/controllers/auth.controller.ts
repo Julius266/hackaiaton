@@ -9,6 +9,13 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+const updateProfileSchema = z.object({
+  email: z.string().email().optional(),
+  nombre: z.string().min(1).optional(),
+  rol: z.enum(['user', 'patient', 'admin']).optional(),
+  activo: z.boolean().optional(),
+});
+
 const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
@@ -22,6 +29,7 @@ export function createAuthController(deps: { userService: UserService }): {
   login: RequestHandler;
   register: RequestHandler;
   updateProfile: RequestHandler;
+  updateUser: RequestHandler;
   updatePassword: RequestHandler;
   requestCode: RequestHandler;
   verifyAndChangePassword: RequestHandler;
@@ -52,6 +60,7 @@ export function createAuthController(deps: { userService: UserService }): {
           accessToken: token, 
           user: {
             id: user.pageId,
+            userId: user.userId,
             patientId,
             email: user.email,
             role: user.role,
@@ -112,7 +121,25 @@ export function createAuthController(deps: { userService: UserService }): {
         res.status(401).json({ success: false, message: 'Unauthorized' });
         return;
       }
-      const user = await deps.userService.updateProfile(authUser.sub, req.body);
+      const payload = updateProfileSchema.parse(req.body);
+      const user = await deps.userService.updateProfile(authUser.sub, payload);
+      res.json({ success: true, data: user });
+    }),
+
+    updateUser: wrapAsync(async (req, res) => {
+      const { userId: rawUserId } = req.params;
+      const userId = Array.isArray(rawUserId) ? rawUserId[0] : rawUserId;
+      if (!userId) {
+        res.status(400).json({ success: false, message: 'userId is required' });
+        return;
+      }
+      const payload = updateProfileSchema.parse(req.body);
+      const target = await deps.userService.findByUserId(userId);
+      if (!target) {
+        res.status(404).json({ success: false, message: `Usuario no encontrado: ${userId}` });
+        return;
+      }
+      const user = await deps.userService.updateProfile(target.pageId, payload);
       res.json({ success: true, data: user });
     }),
 

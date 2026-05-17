@@ -953,6 +953,11 @@ export class NotionService {
     return page ? this.mapUser(page) : null;
   }
 
+  public async findUserByUserId(userId: string): Promise<import('../types/notion-model.types').UserRecord | null> {
+    const page = await this.findSingleByProperty(env.DATABASE_ID_USUARIOS, 'User_ID', userId, 'title');
+    return page ? this.mapUser(page) : null;
+  }
+
   public async getUserLinkedPatientIds(userPageId: string): Promise<string[]> {
     const page = await this.getPage(userPageId);
     if (!page) return [];
