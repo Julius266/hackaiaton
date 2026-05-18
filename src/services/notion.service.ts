@@ -1172,6 +1172,7 @@ export class NotionService {
       copagoEstimado: extractNumberValue(page.properties.Copago_Estimado),
       sintomaIngresado: this.extract(page, 'Sintoma_Ingresado') || undefined,
       estadoConsulta: this.extract(page, 'Estado_Consulta') || undefined,
+      activo: extractCheckboxValue(page.properties.Activo),
       raw: page.properties as Record<string, any>,
     };
   }

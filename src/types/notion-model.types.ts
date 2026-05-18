@@ -75,6 +75,8 @@ export interface ConsultationRecord extends NotionBaseRecord {
   copagoEstimado?: number;
   sintomaIngresado?: string;
   estadoConsulta?: string;
+  /** Si existe la propiedad Activo en CONSULTAS y está en false, no debe listarse en historial. */
+  activo?: boolean;
 }
 
 export interface SessionMessageRecord extends NotionBaseRecord {

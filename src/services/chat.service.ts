@@ -233,8 +233,10 @@ export class ChatService {
 
   public async getUserSessions(customerId: string): Promise<Array<{ id: string; title: string; lastUpdated: string }>> {
     // Buscamos todas las consultas (sesiones) en Notion para este número de póliza / ID
-    const consultations = await this.notionService.getConsultationsByNumeroPoliza(customerId);
-    
+    const consultations = (await this.notionService.getConsultationsByNumeroPoliza(customerId)).filter(
+      (c) => c.activo !== false,
+    );
+
     return consultations.map(c => ({
       id: c.pageId,
       title: c.sintomaIngresado ? (c.sintomaIngresado.slice(0, 40) + (c.sintomaIngresado.length > 40 ? '...' : '')) : 'Nueva Consulta',
