@@ -1,5 +1,5 @@
 import { env } from '../config/env';
-import { FINAL_RESPONSE_PROMPT, SYSTEM_PROMPT } from '../config/systemPrompt';
+import { CONVERSATIONAL_RESPONSE_PROMPT, FINAL_RESPONSE_PROMPT, SYSTEM_PROMPT } from '../config/systemPrompt';
 import type { FinalResponseInput, RequiredDataResult, SymptomAnalysis } from '../types/ai.types';
 import type { BusinessData } from '../types/business.types';
 import type { ChatMessage, CustomerContext } from '../types/chat.types';
@@ -429,6 +429,19 @@ export class AiService {
     }
 
     try {
+      const isConversational = ['general_information', 'out_of_scope'].includes(input.analysis.intent);
+
+      if (isConversational) {
+        const lastUserMessage = input.history.filter((m) => m.role === 'user').at(-1)?.content ?? '';
+        const conversationalPrompt = [
+          CONVERSATIONAL_RESPONSE_PROMPT,
+          '',
+          `Historial reciente: ${JSON.stringify(recentHistory)}`,
+          `Último mensaje del paciente: "${lastUserMessage}"`,
+        ].join('\n');
+        return await this.callModelText(conversationalPrompt, 0.7);
+      }
+
       const omitInsuranceRecap = policySummaryLikelyRedundant(input.history);
 
       const prompt = [
@@ -454,7 +467,7 @@ export class AiService {
         'Responde solo en texto natural y útil para el paciente.',
       ].join('\n');
 
-      return await this.callModelText(prompt);
+      return await this.callModelText(prompt, 0.65);
     } catch {
       return fallback;
     }
@@ -586,13 +599,14 @@ export class AiService {
     return this.callGeminiJson(prompt, userMessage);
   }
 
-  private async callModelText(prompt: string): Promise<string> {
+  private async callModelText(prompt: string, temperature = 0.65): Promise<string> {
     if (env.AI_PROVIDER === 'openrouter') {
       return this.callOpenAiCompatible({
         baseUrl: env.OPENROUTER_BASE_URL,
         apiKey: env.OPENROUTER_API_KEY,
         model: env.OPENROUTER_MODEL,
         jsonMode: false,
+        temperature,
         messages: [{ role: 'system', content: prompt }],
       });
     }
@@ -601,13 +615,14 @@ export class AiService {
       return this.callOpenAiCompatible({
         baseUrl: env.OPENAI_BASE_URL,
         apiKey: env.OPENAI_API_KEY,
-        model: env.OPENAI_MODEL,
+        model: env.OPENAI_RESPONSE_MODEL,
         jsonMode: false,
+        temperature,
         messages: [{ role: 'system', content: prompt }],
       });
     }
 
-    return this.callGeminiText(prompt);
+    return this.callGeminiText(prompt, temperature);
   }
 
   private async callOpenAiCompatible(input: {
@@ -616,6 +631,7 @@ export class AiService {
     model: string;
     messages: CompletionMessage[];
     jsonMode?: boolean;
+    temperature?: number;
   }): Promise<string> {
     if (!input.apiKey) {
       throw new Error('AI provider missing API key');
@@ -636,7 +652,7 @@ export class AiService {
       body: JSON.stringify({
         model: input.model,
         messages: input.messages,
-        temperature: 0.2,
+        temperature: input.temperature ?? 0.2,
         ...(input.jsonMode ? { response_format: { type: 'json_object' } } : {}),
       }),
     });
@@ -685,7 +701,7 @@ export class AiService {
     return payload.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   }
 
-  private async callGeminiText(prompt: string): Promise<string> {
+  private async callGeminiText(prompt: string, temperature = 0.65): Promise<string> {
     if (!env.GEMINI_API_KEY) {
       throw new Error('Gemini API key is missing');
     }
@@ -707,7 +723,7 @@ export class AiService {
           },
         ],
         generationConfig: {
-          temperature: 0.4,
+          temperature,
         },
       }),
     });

@@ -29,9 +29,10 @@ const envSchema = z.object({
   OPENROUTER_MODEL: z.string().default('openai/gpt-4o-mini'),
   OPENAI_API_KEY: z.string().optional().default(''),
   OPENAI_BASE_URL: z.string().default('https://api.openai.com/v1'),
-  OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+  OPENAI_MODEL: z.string().default('gpt-4.1-mini'),
+  OPENAI_RESPONSE_MODEL: z.string().default('gpt-4.1'),
   GEMINI_API_KEY: z.string().optional().default(''),
-  GEMINI_MODEL: z.string().default('gemini-1.5-flash'),
+  GEMINI_MODEL: z.string().default('gemini-2.0-flash'),
   NOTION_TOKEN: z.string().optional().default(''),
   /** Timeout por petición al API de Notion (ms). Por defecto 120s para workspaces lentos o consultas grandes. */
   NOTION_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
